@@ -1,0 +1,20 @@
+# Local tooling and editor state
+.claude/
+.vscode/
+.idea/
+
+# Internal working notes, not part of the published project
+MEJORAS.md
+
+# Recordings and exports
+*.webm
+*.mp4
+*.mkv
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Dependencies, should any ever appear
+node_modules/
