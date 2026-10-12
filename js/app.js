@@ -973,7 +973,8 @@ function openCropEditor() {
       let dragging = false;
       on(handle, 'pointerdown', (e) => {
         dragging = true;
-        handle.setPointerCapture(e.pointerId);
+        // Throws when the pointer is already gone, which must not break the drag.
+        try { handle.setPointerCapture(e.pointerId); } catch { /* keep going */ }
         e.preventDefault();
       });
       on(handle, 'pointermove', (e) => {
