@@ -1,4 +1,5 @@
 # Local tooling and editor state
+start-pengu-recorder.bat
 .claude/
 .vscode/
 .idea/
