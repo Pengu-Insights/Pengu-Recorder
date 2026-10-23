@@ -7,12 +7,17 @@
       MediaRecorder. No canvas, so no re-encode of the screen, no text
       blurring, and far less CPU:
         getDisplayMedia() (or camera) ---+
-        mic + system audio -> AudioContext mix -+-> MediaRecorder -> webm
+        mic + system audio -> AudioContext mix -+-> MediaRecorder -> mp4 / webm
 
-   2. Screen + camera — compositing is unavoidable, so we draw both onto a
-      hidden canvas at 30 fps and record its captureStream. The draw clock
-      lives in a Web Worker because timers in a hidden tab get throttled to
-      ~1 Hz, and a screen recorder's own tab is hidden most of the time.
+   2. Screen + camera, and Studio (screen and camera side by side on a
+      backdrop, see studio.js) — compositing is unavoidable, so we draw
+      onto a hidden canvas at 30 fps and record its captureStream. The draw
+      clock lives in a Web Worker because timers in a hidden tab get
+      throttled to ~1 Hz, and a screen recorder's own tab is hidden most of
+      the time.
+
+   The container follows `format`: MP4 (H.264 + AAC) where the browser can
+   encode it (Chrome and Edge 126+, Safari), WebM otherwise.
 
    Chunks are flushed to IndexedDB while recording (see db.js `recovery`),
    which keeps long takes out of RAM and survives a crash or a closed tab.
@@ -35,7 +40,7 @@ const CLOCK_WORKER_SRC = `
 
 class PenguRecorder {
   constructor() {
-    this.mode = null;              // 'screen-cam' | 'screen' | 'camera'
+    this.mode = null;              // 'screen-cam' | 'studio' | 'screen' | 'camera'
     this.screenStream = null;
     this.cameraStream = null;
     this.micStream = null;
@@ -56,6 +61,13 @@ class PenguRecorder {
     this.recordedStream = null;
     this.mediaRecorder = null;
     this.mimeType = '';
+    this.format = PenguRecorder.formatSupported('mp4') ? 'mp4' : 'webm';
+    this.quality = 'auto';         // 'auto' | '2160p' | '1440p' | '1080p' | '720p'
+
+    /* Studio layout options (see studio.js) and the backdrop, rendered once
+       at the output size when the take starts. */
+    this.studio = { ...PenguStudio.DEFAULTS, backgroundId: PenguBackgrounds.DEFAULT_ID };
+    this.studioBackground = null;
 
     this.state = 'idle';           // 'idle' | 'recording' | 'paused'
     this.startedAt = 0;
@@ -91,22 +103,71 @@ class PenguRecorder {
 
   /* ---------- capability helpers ---------- */
 
-  static pickMimeType() {
-    const candidates = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-    ];
-    for (const m of candidates) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
-    }
-    return ''; // let the browser pick its default
+  /* Most specific first. avc1.640033 is H.264 High at level 5.1, enough for
+     4K at 30 fps; the shorter strings catch browsers that reject a profile.
+     There is deliberately no bare 'video/mp4': Chromium builds without an
+     H.264 encoder accept it and write VP9 into the MP4, which QuickTime,
+     iPhones and many editors refuse. MP4 here always means H.264.
+     AAC first; plain Chromium has no AAC encoder, so Opus audio follows. */
+  static get MIME_CANDIDATES() {
+    return {
+      mp4: [
+        'video/mp4;codecs=avc1.640033,mp4a.40.2',
+        'video/mp4;codecs=avc1.4d0033,mp4a.40.2',
+        'video/mp4;codecs=avc1.42e01f,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4;codecs=avc3,mp4a.40.2',
+        'video/mp4;codecs=avc1.640033,opus',
+        'video/mp4;codecs=avc1,opus',
+        'video/mp4;codecs=avc1',
+      ],
+      webm: [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ],
+    };
+  }
+
+  /** The best MIME type this browser can record for `format`, or ''. */
+  static mimeFor(format) {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+    const list = PenguRecorder.MIME_CANDIDATES[format] || [];
+    return list.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  }
+
+  static formatSupported(format) {
+    return !!PenguRecorder.mimeFor(format);
+  }
+
+  /** `format` when possible, WebM as the fallback, '' for the browser default. */
+  static pickMimeType(format = 'webm') {
+    return PenguRecorder.mimeFor(format) || PenguRecorder.mimeFor('webm') || '';
+  }
+
+  /** 'mp4' | 'webm' for a MIME type or a blob type. */
+  static formatOf(type) {
+    return /mp4/i.test(type || '') ? 'mp4' : 'webm';
   }
 
   /** Bitrate scaled to the frame size: 5 Mbps is wasteful at 720p and thin at 4K. */
   static bitrateFor(width, height, fps = 30) {
-    const bits = Math.round((width || 1280) * (height || 720) * fps * 0.12);
-    return Math.min(16_000_000, Math.max(2_000_000, bits));
+    const bits = Math.round((width || 1280) * (height || 720) * fps * 0.15);
+    return Math.min(40_000_000, Math.max(2_500_000, bits));
+  }
+
+  /* Studio output size. The canvas is always 16:9 because the backdrop is
+     what fills it, whatever the shape of the shared surface. 'auto' goes
+     up to 1440p when the screen is big enough to fill it. */
+  static studioSize(quality, sourceHeight) {
+    const sizes = {
+      '2160p': { w: 3840, h: 2160 },
+      '1440p': { w: 2560, h: 1440 },
+      '1080p': { w: 1920, h: 1080 },
+      '720p': { w: 1280, h: 720 },
+    };
+    if (sizes[quality]) return sizes[quality];
+    return (sourceHeight || 0) >= 1400 ? sizes['1440p'] : sizes['1080p'];
   }
 
   static micConstraints(deviceId, hiFi) {
@@ -140,7 +201,9 @@ class PenguRecorder {
     if (opts.hiFiAudio !== undefined) this.hiFiAudio = !!opts.hiFiAudio;
 
     if (mode !== 'screen') {
-      const video = { width: { ideal: 1280 }, height: { ideal: 720 } };
+      // 1080p: the camera fills a large part of the frame in camera-only and
+      // Studio takes. Cameras that cannot do it hand over their best.
+      const video = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
       if (this.deviceIds.camera) video.deviceId = { exact: this.deviceIds.camera };
       try {
         this.cameraStream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
@@ -167,8 +230,11 @@ class PenguRecorder {
     // Capture size follows the setup-screen quality picker; 'auto' lets the
     // browser hand over the surface at its native size.
     const video = { frameRate: { ideal: 30 }, cursor: 'always' };
-    if (this.quality === '1080p') { video.width = { ideal: 1920 }; video.height = { ideal: 1080 }; }
-    if (this.quality === '720p') { video.width = { ideal: 1280 }; video.height = { ideal: 720 }; }
+    const sizes = { '2160p': [3840, 2160], '1440p': [2560, 1440], '1080p': [1920, 1080], '720p': [1280, 720] };
+    if (sizes[this.quality]) {
+      video.width = { ideal: sizes[this.quality][0] };
+      video.height = { ideal: sizes[this.quality][1] };
+    }
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({
       video,
       audio: true,
@@ -205,10 +271,12 @@ class PenguRecorder {
     };
   }
 
-  /* True when the take has to be composited. Two reasons: a camera bubble to
-     bake in, or a crop to apply — cropping means re-encoding through the
-     canvas, which the uncropped screen path deliberately avoids. */
+  /* True when the take has to be composited. Three reasons: the Studio
+     layout, a camera bubble to bake in, or a crop to apply — cropping means
+     re-encoding through the canvas, which the uncropped screen path
+     deliberately avoids. */
   get usesCanvas() {
+    if (this.mode === 'studio') return true;
     if (this.mode === 'screen-cam' && this.cameraStream) return true;
     return this.mode !== 'camera' && this.hasCrop;
   }
@@ -242,6 +310,11 @@ class PenguRecorder {
     let vh;
     if (this.usesCanvas) {
       this._setupCanvas();
+      if (this.mode === 'studio') {
+        this.studioBackground = await PenguBackgrounds
+          .render(this.studio.backgroundId, this.canvas.width, this.canvas.height)
+          .catch(() => null);
+      }
       this.recordedStream = this.canvas.captureStream(30);
       vw = this.canvas.width;
       vh = this.canvas.height;
@@ -282,7 +355,7 @@ class PenguRecorder {
   }
 
   _createRecorder(width, height) {
-    this.mimeType = PenguRecorder.pickMimeType();
+    this.mimeType = PenguRecorder.pickMimeType(this.format);
     const options = { videoBitsPerSecond: PenguRecorder.bitrateFor(width, height) };
     if (this.mimeType) options.mimeType = this.mimeType;
     this.mediaRecorder = new MediaRecorder(this.recordedStream, options);
@@ -354,8 +427,14 @@ class PenguRecorder {
     const scale = this.cropScale;
     // Even dimensions: odd ones make some encoders pad or refuse the frame.
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
-    this.canvas.width = even((s.width || 1920) * scale.w);
-    this.canvas.height = even((s.height || 1080) * scale.h);
+    if (this.mode === 'studio') {
+      const size = PenguRecorder.studioSize(this.quality, s.height);
+      this.canvas.width = size.w;
+      this.canvas.height = size.h;
+    } else {
+      this.canvas.width = even((s.width || 1920) * scale.w);
+      this.canvas.height = even((s.height || 1080) * scale.h);
+    }
     if (this.cameraStream) this.camVideo = this._makeSourceVideo(this.cameraStream);
 
     this.ctx = this.canvas.getContext('2d');
@@ -400,12 +479,23 @@ class PenguRecorder {
     }
   }
 
-  /* ---------- per-frame compositing (screen + camera only) ---------- */
+  /* ---------- per-frame compositing (screen + camera, Studio, crops) ---------- */
   _drawFrame() {
     const { ctx, canvas } = this;
     if (!ctx) return;
     const W = canvas.width;
     const H = canvas.height;
+
+    if (this.mode === 'studio') {
+      PenguStudio.draw(ctx, W, H, {
+        background: this.studioBackground,
+        screen: this.screenVideo,
+        crop: this.crop,
+        camera: this.camVideo,
+        opts: this.studio,
+      });
+      return;
+    }
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
@@ -621,6 +711,7 @@ class PenguRecorder {
     this.camVideo = null;
     this.canvas = null;
     this.ctx = null;
+    this.studioBackground = null;
     this.sessionId = null;
     this.pending = [];
     this.state = 'idle';

@@ -1,25 +1,29 @@
 /* ============================================================
    db.js — minimal promise-based IndexedDB wrapper.
 
-   Stores (v2):
+   Stores (v3):
      videos    metadata only: { id, title, createdAt, duration, mode,
-                                trimStart, trimEnd, thumbnail, notes, views }
+                                trimStart, trimEnd, thumbnail, notes, views,
+                                mimeType }
      blobs     { id, blob }  — the heavy payload, kept out of `videos` so that
                                metadata writes (title, view counter) never
                                rewrite hundreds of megabytes.
      recovery  { key, ... }  — in-progress recording chunks + session meta,
                                so a crash or a closed tab does not lose a take.
                                key = `<sessionId>#meta` | `<sessionId>#<seq>`
+     backgrounds { id, name, blob, createdAt } — images the user added for
+                               the Studio backdrop (see backgrounds.js).
    ============================================================ */
 
 const PenguDB = (() => {
   const DB_NAME = 'pengu-recorder';
   const LEGACY_DB = 'loom-clone';   // name used before the project was renamed
   const MIGRATED_FLAG = 'pengu-recorder:legacy-imported';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const VIDEOS = 'videos';
   const BLOBS = 'blobs';
   const RECOVERY = 'recovery';
+  const BACKGROUNDS = 'backgrounds';
 
   let dbPromise = null;
   let readyPromise = null;
@@ -41,6 +45,9 @@ const PenguDB = (() => {
         }
         if (!db.objectStoreNames.contains(RECOVERY)) {
           db.createObjectStore(RECOVERY, { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains(BACKGROUNDS)) {
+          db.createObjectStore(BACKGROUNDS, { keyPath: 'id' });
         }
 
         // v1 -> v2: lift inline blobs out of the video records.
@@ -263,6 +270,27 @@ const PenguDB = (() => {
     return run(RECOVERY, 'readwrite', (store) => store.delete(range));
   }
 
+  /* ---------------- Studio backgrounds ---------------- */
+
+  async function addBackground(record) {
+    return run(BACKGROUNDS, 'readwrite', (store) => store.put(record));
+  }
+
+  /** Uploaded backgrounds, newest first. */
+  async function listBackgrounds() {
+    const rows = await run(BACKGROUNDS, 'readonly', (store) => store.getAll());
+    return (rows || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  async function getBackground(id) {
+    const rec = await run(BACKGROUNDS, 'readonly', (store) => store.get(id));
+    return rec ? rec.blob : null;
+  }
+
+  async function removeBackground(id) {
+    return run(BACKGROUNDS, 'readwrite', (store) => store.delete(id));
+  }
+
   /* ---------------- storage headroom ---------------- */
 
   /** Ask for persistent storage so the browser cannot silently evict videos. */
@@ -290,6 +318,7 @@ const PenguDB = (() => {
   return {
     save, patch, getAll, get, getBlob, remove,
     startSession, touchSession, appendChunk, getChunks, listSessions, clearSession,
+    addBackground, listBackgrounds, getBackground, removeBackground,
     requestPersistence, estimate,
   };
 })();

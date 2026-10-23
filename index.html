@@ -43,6 +43,10 @@
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 5h14a2 2 0 0 1 2 2v3l4-3v10l-4-3v3a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
             Screen and camera
           </button>
+          <button class="dropdown-item" data-mode="studio">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 4h18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm1 3v10h10V7H4zm13 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-3 7.5h6c0-1.7-1.3-2.5-3-2.5s-3 .8-3 2.5z"/></svg>
+            Studio
+          </button>
           <button class="dropdown-item" data-mode="screen">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 4h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
             Screen only
@@ -116,6 +120,11 @@
               <strong>Screen and camera</strong>
               <small>Record your screen with a camera bubble</small>
             </button>
+            <button class="mode-btn" data-mode="studio">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 4h18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm1 3v10h10V7H4zm13 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-3 7.5h6c0-1.7-1.3-2.5-3-2.5s-3 .8-3 2.5z"/></svg>
+              <strong>Studio</strong>
+              <small>Screen and camera side by side, on a background</small>
+            </button>
             <button class="mode-btn" data-mode="screen">
               <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 4h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
               <strong>Screen only</strong>
@@ -129,6 +138,8 @@
           </div>
 
           <div class="setup-preview">
+            <canvas id="studio-preview" class="hidden" width="960" height="540"
+                    role="img" aria-label="Preview of the Studio layout"></canvas>
             <div id="cam-preview-wrap">
               <video id="cam-preview" autoplay muted playsinline></video>
               <div id="cam-preview-off">Camera off</div>
@@ -152,7 +163,7 @@
               </label>
 
               <label class="field" id="cam-size-field">
-                <span>Camera bubble size</span>
+                <span id="cam-size-label">Camera bubble size</span>
                 <select id="cam-size">
                   <option value="small">Small</option>
                   <option value="medium" selected>Medium</option>
@@ -163,9 +174,19 @@
               <label class="field" id="quality-field">
                 <span>Capture quality</span>
                 <select id="quality">
-                  <option value="auto" selected>Auto (native)</option>
+                  <option value="auto" selected>Best available (native)</option>
+                  <option value="2160p">4K (2160p)</option>
+                  <option value="1440p">1440p</option>
                   <option value="1080p">1080p</option>
                   <option value="720p">720p (lighter)</option>
+                </select>
+              </label>
+
+              <label class="field" id="format-field">
+                <span>Video format</span>
+                <select id="format">
+                  <option value="mp4">MP4 (H.264), plays everywhere</option>
+                  <option value="webm">WebM (VP9)</option>
                 </select>
               </label>
 
@@ -191,6 +212,37 @@
                   High-fidelity audio
                   <small>No echo cancellation or noise suppression — for sharing music or video.</small>
                 </span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Studio layout: backdrop gallery and camera placement -->
+          <div id="studio-panel" class="studio-panel hidden">
+            <div class="studio-head">
+              <span class="studio-title" id="bg-gallery-label">Background</span>
+              <span class="studio-sub">Pick one, or add your own image, like a wallpaper you made with an AI image generator. It stays in this browser.</span>
+            </div>
+            <div id="bg-gallery" class="bg-gallery" role="radiogroup" aria-labelledby="bg-gallery-label"></div>
+
+            <div class="device-grid">
+              <label class="field">
+                <span>Camera position</span>
+                <select id="studio-side">
+                  <option value="left">Left of the screen</option>
+                  <option value="right">Right of the screen</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Camera shape</span>
+                <select id="studio-shape">
+                  <option value="portrait">Portrait</option>
+                  <option value="square">Square</option>
+                  <option value="circle">Circle</option>
+                </select>
+              </label>
+              <label class="field studio-name-field">
+                <span>Name under your camera</span>
+                <input type="text" id="studio-name" maxlength="48" placeholder="Optional, e.g. your name and role">
               </label>
             </div>
           </div>
@@ -232,7 +284,11 @@
               <input type="text" id="preview-title" maxlength="120">
             </label>
             <button id="copy-link-btn" class="btn btn-outline btn-block">Copy link</button>
-            <button id="download-btn" class="btn btn-outline btn-block">Download .webm</button>
+            <div class="download-pair">
+              <button id="download-mp4-btn" class="btn btn-outline">Download MP4</button>
+              <button id="download-webm-btn" class="btn btn-outline">Download WebM</button>
+            </div>
+            <p class="download-note">Downloads keep your trim. Converting or trimming re-encodes the video, which takes as long as the clip.</p>
             <button id="save-btn" class="btn btn-primary btn-block">Save to library</button>
             <button id="discard-btn" class="btn btn-danger-ghost btn-block">Discard</button>
           </div>
@@ -243,6 +299,9 @@
       <section id="view-watch" class="view hidden">
         <header class="view-header">
           <button id="watch-back" class="btn btn-ghost">&larr; Library</button>
+          <span class="header-spacer"></span>
+          <button id="watch-download-mp4" class="btn btn-outline">Download MP4</button>
+          <button id="watch-download-webm" class="btn btn-outline">Download WebM</button>
           <button id="watch-delete" class="btn btn-danger-ghost">Delete</button>
         </header>
         <div class="watch-layout">
@@ -338,6 +397,21 @@
     </div>
   </div>
 
+  <!-- Export progress: converting to MP4/WebM, or applying a trim -->
+  <div id="export-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="export-title">
+    <div class="export-dialog">
+      <h2 id="export-title">Preparing your video</h2>
+      <p class="export-sub" id="export-sub"></p>
+      <div class="export-bar" role="progressbar" aria-labelledby="export-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="export-fill"></div>
+      </div>
+      <p class="export-readout" id="export-readout" aria-live="polite">0%</p>
+      <div class="crop-actions">
+        <button id="export-cancel" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 3-2-1 countdown overlay -->
   <div id="countdown-overlay" class="hidden" role="status" aria-label="Recording starts in">
     <div id="countdown-number">3</div>
@@ -347,7 +421,10 @@
   <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <script src="js/db.js"></script>
+  <script src="js/backgrounds.js"></script>
+  <script src="js/studio.js"></script>
   <script src="js/recorder.js"></script>
+  <script src="js/converter.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

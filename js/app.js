@@ -25,6 +25,11 @@ const AppState = {
   micId: null,
   hiFiAudio: false,
   recovery: null,       // pending recovery session meta, if any
+  format: 'webm',       // 'mp4' | 'webm', settled by loadPrefs()
+  quality: 'auto',
+  studio: { ...PenguStudio.DEFAULTS, backgroundId: PenguBackgrounds.DEFAULT_ID },
+  studioPreview: null,  // { raf, video, background } while the setup preview runs
+  exportAbort: null,    // AbortController of the export in progress
 };
 
 /* ---------------- helpers ---------------- */
@@ -76,6 +81,42 @@ function withTimeout(promise, ms, fallback = null) {
   ]);
 }
 
+/* ---------------- preferences ----------------
+   Per-browser conveniences only: format, quality and the Studio look.
+   Storage throws in some private windows and when site data is blocked;
+   the app then starts from the defaults every time, which is fine. */
+
+const PREFS_KEY = 'pengu-recorder:prefs';
+const STUDIO_KEYS = ['cameraSide', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
+
+function loadPrefs() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') || {};
+  } catch {
+    saved = {};
+  }
+  if (typeof saved.quality === 'string') AppState.quality = saved.quality;
+  if (saved.studio && typeof saved.studio === 'object') {
+    for (const k of STUDIO_KEYS) {
+      if (typeof saved.studio[k] === 'string') AppState.studio[k] = saved.studio[k];
+    }
+  }
+  const wanted = saved.format === 'webm' || saved.format === 'mp4' ? saved.format : 'mp4';
+  AppState.format = PenguRecorder.formatSupported(wanted) ? wanted
+    : (PenguRecorder.formatSupported('mp4') ? 'mp4' : 'webm');
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      format: AppState.format,
+      quality: AppState.quality,
+      studio: AppState.studio,
+    }));
+  } catch { /* storage unavailable: keep the choice for this visit only */ }
+}
+
 /* ---------------- router ---------------- */
 
 function parseRoute() {
@@ -107,6 +148,7 @@ async function router() {
   // Leaving the setup screen without ever recording -> release preview streams.
   if (AppState.lastHash.startsWith('#/record') && route.name !== 'record' && recorder.state === 'idle') {
     stopMicMeter();
+    stopStudioPreview();
     recorder.cleanup();
   }
 
@@ -163,7 +205,9 @@ async function renderLibrary() {
     const meta = document.createElement('p');
     meta.className = 'card-meta';
     const views = v.views ?? 0; // records saved before the real counter may lack the field
-    meta.textContent = `${fmtDate(v.createdAt)} · ${views} view${views === 1 ? '' : 's'}`;
+    // Older records predate the field; they were always WebM.
+    const format = PenguRecorder.formatOf(v.mimeType).toUpperCase();
+    meta.textContent = `${fmtDate(v.createdAt)} · ${views} view${views === 1 ? '' : 's'} · ${format}`;
 
     card.append(thumb, title, meta);
     card.setAttribute('aria-label', `${v.title}, ${meta.textContent}`);
@@ -190,10 +234,27 @@ async function renderStorageNote() {
 /* ---------------- recording setup ---------------- */
 
 async function enterSetup() {
+  applySetupControls();
   selectModeButton(AppState.setupMode);
   $('#notes-input').value = AppState.notes; // notes persist for the session
   $('#hifi-audio').checked = AppState.hiFiAudio;
   await acquireForMode(AppState.setupMode);
+}
+
+/** Put the saved choices back into the setup form. */
+function applySetupControls() {
+  const mp4 = $('#format option[value="mp4"]');
+  if (!PenguRecorder.formatSupported('mp4')) {
+    mp4.disabled = true;
+    mp4.textContent = 'MP4 (needs Chrome or Edge 126+)';
+  }
+  $('#format').value = AppState.format;
+  $('#quality').value = AppState.quality;
+  if (!$('#quality').value) $('#quality').value = 'auto';
+  $('#cam-size').value = AppState.studio.cameraSize;
+  $('#studio-side').value = AppState.studio.cameraSide;
+  $('#studio-shape').value = AppState.studio.cameraShape;
+  $('#studio-name').value = AppState.studio.name;
 }
 
 function selectModeButton(mode) {
@@ -204,13 +265,23 @@ function selectModeButton(mode) {
   });
   $('#cam-size-field').classList.toggle('hidden', mode === 'screen');
   $('#cam-device-field').classList.toggle('hidden', mode === 'screen');
-  $('#setup-hint').textContent = mode === 'camera'
-    ? 'Your browser will ask for camera and microphone access.'
-    : 'Your browser will ask which screen, window, or tab to share.';
+
+  const studio = mode === 'studio';
+  $('#studio-panel').classList.toggle('hidden', !studio);
+  $('#studio-preview').classList.toggle('hidden', !studio);
+  $('#cam-preview-wrap').classList.toggle('hidden', studio);
+  $('#cam-size-label').textContent = studio ? 'Camera size' : 'Camera bubble size';
+  if (studio) renderBackgroundGallery();
+
+  $('#setup-hint').textContent = {
+    camera: 'Your browser will ask for camera and microphone access.',
+    studio: 'Your browser will ask which screen, window, or tab to share. It goes in the frame, with your camera beside it.',
+  }[mode] || 'Your browser will ask which screen, window, or tab to share.';
 }
 
 async function acquireForMode(mode) {
   stopMicMeter();
+  stopStudioPreview();
   recorder.cleanup();
 
   const { camera, mic } = await recorder.acquireSetupStreams(mode, {
@@ -238,8 +309,145 @@ async function acquireForMode(mode) {
   $('#mic-label').textContent = mic ? 'Mic' : 'No mic';
 
   if (mic) startMicMeter(recorder.micStream);
+  if (mode === 'studio' && AppState.setupMode === 'studio') startStudioPreview();
 
   await populateDeviceSelects();
+}
+
+/* ---------------- Studio setup: live preview + background gallery ---------------- */
+
+/* Runs the real compositor (studio.js) on a small canvas, with a stand-in
+   where the screen will go, so what the user arranges is what gets recorded. */
+function startStudioPreview() {
+  stopStudioPreview();
+  const canvas = $('#studio-preview');
+  const ctx = canvas.getContext('2d');
+  const state = { raf: 0, video: null, background: null };
+  if (recorder.cameraStream) {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.srcObject = recorder.cameraStream;
+    v.play().catch(() => {});
+    state.video = v;
+  }
+  AppState.studioPreview = state;
+  refreshPreviewBackground();
+
+  const tick = () => {
+    PenguStudio.draw(ctx, canvas.width, canvas.height, {
+      background: state.background,
+      screen: null,
+      camera: state.video,
+      opts: AppState.studio,
+      placeholder: true,
+    });
+    state.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopStudioPreview() {
+  const state = AppState.studioPreview;
+  if (!state) return;
+  cancelAnimationFrame(state.raf);
+  if (state.video) state.video.srcObject = null;
+  AppState.studioPreview = null;
+}
+
+async function refreshPreviewBackground() {
+  const state = AppState.studioPreview;
+  if (!state) return;
+  const canvas = $('#studio-preview');
+  const bg = await PenguBackgrounds
+    .render(AppState.studio.backgroundId, canvas.width, canvas.height)
+    .catch(() => null);
+  if (AppState.studioPreview === state) state.background = bg;
+}
+
+async function renderBackgroundGallery() {
+  const gallery = $('#bg-gallery');
+  const items = await PenguBackgrounds.list();
+  if (!items.some((i) => i.id === AppState.studio.backgroundId)) {
+    AppState.studio.backgroundId = PenguBackgrounds.DEFAULT_ID;
+    refreshPreviewBackground();
+  }
+
+  gallery.innerHTML = '';
+  const add = document.createElement('label');
+  add.className = 'bg-tile bg-add';
+  add.title = 'Add your own image';
+  add.innerHTML = '<input type="file" accept="image/*" class="sr-only-input" aria-label="Add your own background image">'
+    + '<span class="bg-add-plus" aria-hidden="true">+</span><span>Add image</span>';
+  add.querySelector('input').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) addBackgroundFile(file);
+  });
+  gallery.appendChild(add);
+
+  for (const item of items) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bg-tile-wrap';
+
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'bg-tile';
+    tile.dataset.id = item.id;
+    tile.title = item.label;
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-label', item.label);
+    tile.setAttribute('aria-checked', item.id === AppState.studio.backgroundId ? 'true' : 'false');
+    const img = document.createElement('img');
+    img.src = item.thumb;
+    img.alt = '';
+    tile.appendChild(img);
+    tile.addEventListener('click', () => selectBackground(item.id));
+    wrap.appendChild(tile);
+
+    if (item.removable) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'bg-remove';
+      del.textContent = '×';
+      del.setAttribute('aria-label', `Remove ${item.label}`);
+      del.addEventListener('click', () => removeBackgroundImage(item.id));
+      wrap.appendChild(del);
+    }
+    gallery.appendChild(wrap);
+  }
+}
+
+function selectBackground(id) {
+  AppState.studio.backgroundId = id;
+  savePrefs();
+  document.querySelectorAll('#bg-gallery .bg-tile[data-id]').forEach((t) => {
+    t.setAttribute('aria-checked', t.dataset.id === id ? 'true' : 'false');
+  });
+  refreshPreviewBackground();
+}
+
+async function addBackgroundFile(file) {
+  try {
+    const id = await PenguBackgrounds.add(file);
+    AppState.studio.backgroundId = id;
+    savePrefs();
+    await renderBackgroundGallery();
+    refreshPreviewBackground();
+    toast('Background added', 'success');
+  } catch (err) {
+    toast(err && err.message === 'too-large'
+      ? 'That image is over 25 MB. Try a smaller one.'
+      : 'Could not read that image. Try a JPG, PNG or WebP.', 'error');
+  }
+}
+
+async function removeBackgroundImage(id) {
+  await PenguBackgrounds.remove(id).catch(() => {});
+  if (AppState.studio.backgroundId === id) AppState.studio.backgroundId = PenguBackgrounds.DEFAULT_ID;
+  savePrefs();
+  await renderBackgroundGallery();
+  refreshPreviewBackground();
+  toast('Background removed');
 }
 
 /* Device pickers. Labels only exist once permission has been granted, which is
@@ -338,10 +546,12 @@ function runCountdown() {
 
 async function startRecording() {
   const mode = AppState.setupMode;
+  recorder.quality = AppState.quality;
+  recorder.format = AppState.format;
+  recorder.studio = { ...AppState.studio };
 
   if (mode !== 'camera') {
     try {
-      recorder.quality = $('#quality') ? $('#quality').value : 'auto';
       await recorder.acquireScreen();
     } catch (err) {
       toast('Screen sharing was cancelled — pick a screen to start', 'error');
@@ -361,6 +571,7 @@ async function startRecording() {
   }
 
   stopMicMeter();
+  stopStudioPreview();
 
   /* Region crop. Confirming it is also a fresh user gesture, which is exactly
      what the Picture-in-Picture request below needs. */
@@ -369,6 +580,7 @@ async function startRecording() {
     if (!confirmed) {
       recorder.cleanup();
       toast('Recording cancelled');
+      await acquireForMode(mode); // bring the camera preview and mic meter back
       return;
     }
   } else {
@@ -432,8 +644,9 @@ function showRecordingChrome(on) {
   updateBarVisibility();
 
   // The bubble overlay only makes sense when it is actually baked into the
-  // video, i.e. in the composited screen+camera pipeline.
-  const hasBubble = on && recorder.usesCanvas;
+  // video, i.e. in the composited screen+camera pipeline. Studio places the
+  // camera itself, and a crop alone has no camera at all.
+  const hasBubble = on && recorder.mode === 'screen-cam' && !!recorder.cameraStream;
   const bubble = $('#cam-bubble');
   bubble.classList.toggle('hidden', !hasBubble);
   if (hasBubble) {
@@ -582,6 +795,7 @@ async function finishRecording() {
     trimEnd: duration,
     notes: AppState.notes,
     hasAudio: !!result.hasAudio,
+    mimeType: result.blob.type,
     sessionId: result.sessionId, // recovery data, cleared on save or discard
   };
   location.hash = '#/preview';
@@ -618,7 +832,7 @@ async function cancelRecording() {
   bubble.addEventListener('pointercancel', () => { dragging = false; });
 
   window.addEventListener('resize', () => {
-    if (recorder.state !== 'idle' && recorder.usesCanvas) syncBubbleGeometry();
+    if (recorder.state !== 'idle' && recorder.mode === 'screen-cam' && recorder.cameraStream) syncBubbleGeometry();
   });
 })();
 
@@ -1206,6 +1420,7 @@ async function saveCurrent() {
       notes: c.notes || '',
       views: 0, // real counter; incremented on each watch-view open
       size: c.blob.size,
+      mimeType: c.blob.type,
     }, c.blob);
 
     if (c.sessionId) PenguDB.clearSession(c.sessionId).catch(() => {});
@@ -1233,6 +1448,95 @@ function discardCurrent() {
   AppState.current = null;
   toast('Recording discarded');
   location.hash = '#/';
+}
+
+/* ---------------- downloads: MP4 / WebM, trimmed ---------------- */
+
+function safeFileName(title) {
+  return (title || '').replace(/[^\w\- ]+/g, '').trim() || 'pengu-recording';
+}
+
+function triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  // Revoking straight away can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/**
+ * Download `v` ({ blob, title, duration, trimStart, trimEnd }) as `format`.
+ * The original file goes out untouched when it already is that format and
+ * nothing was trimmed; anything else is re-encoded by converter.js.
+ */
+async function downloadVideo(v, format) {
+  if (AppState.exportAbort) return; // one export at a time
+  const native = PenguRecorder.formatOf(v.blob.type);
+  const start = v.trimStart || 0;
+  const end = v.trimEnd ?? v.duration;
+  const trimmed = start > 0.05 || end < v.duration - 0.05;
+  const name = `${safeFileName(v.title)}.${format}`;
+
+  if (format === native && !trimmed) {
+    triggerDownload(v.blob, name);
+    return;
+  }
+  if (!PenguRecorder.formatSupported(format)) {
+    toast(format === 'mp4'
+      ? 'This browser cannot encode MP4. Use Chrome or Edge 126 or newer, or download WebM.'
+      : 'This browser cannot encode WebM. Download MP4 instead.', 'error');
+    return;
+  }
+
+  const ac = new AbortController();
+  AppState.exportAbort = ac;
+  openExportDialog(format, { convert: format !== native, trimmed, seconds: end - start });
+  try {
+    const out = await PenguConverter.exportVideo(v.blob, {
+      format,
+      start,
+      // Untrimmed: play to the real end, which can run a little past the
+      // timer-based duration we stored.
+      end: trimmed ? end : Infinity,
+      duration: v.duration,
+      signal: ac.signal,
+      onProgress: setExportProgress,
+    });
+    triggerDownload(out, name);
+    toast(`${format.toUpperCase()} ready`, 'success');
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      toast('Export cancelled');
+    } else {
+      console.warn('Export failed', err);
+      toast('Export failed. Try the other format, or download the original.', 'error');
+    }
+  } finally {
+    AppState.exportAbort = null;
+    $('#export-overlay').classList.add('hidden');
+  }
+}
+
+function openExportDialog(format, { convert, trimmed, seconds }) {
+  const label = format.toUpperCase();
+  $('#export-title').textContent = `Preparing your ${label}`;
+  const what = convert && trimmed ? `Converting to ${label} and cutting it to your trim.`
+    : convert ? `Converting to ${label}.`
+      : 'Cutting the video to your trim.';
+  $('#export-sub').textContent =
+    `${what} The video plays once in the background, so this takes about ${fmtTime(seconds)}. Keep this tab open.`;
+  setExportProgress(0);
+  $('#export-overlay').classList.remove('hidden');
+  $('#export-cancel').focus();
+}
+
+function setExportProgress(fraction) {
+  const pct = Math.round(fraction * 100);
+  $('#export-fill').style.width = `${pct}%`;
+  $('#export-readout').textContent = `${pct}%`;
+  $('#export-overlay .export-bar').setAttribute('aria-valuenow', String(pct));
 }
 
 /* ---------------- watch view ---------------- */
@@ -1287,6 +1591,12 @@ async function enterWatch(id) {
   const hasNotes = !!(record.notes && record.notes.trim());
   $('#watch-notes').classList.toggle('hidden', !hasNotes);
   if (hasNotes) $('#watch-notes-text').textContent = record.notes;
+
+  const asDownload = () => ({
+    blob, title: record.title, duration: record.duration, trimStart: start, trimEnd: end,
+  });
+  $('#watch-download-mp4').onclick = () => downloadVideo(asDownload(), 'mp4');
+  $('#watch-download-webm').onclick = () => downloadVideo(asDownload(), 'webm');
 
   $('#watch-delete').onclick = async () => {
     await PenguDB.remove(record.id);
@@ -1466,6 +1776,29 @@ function initEvents() {
     AppState.hiFiAudio = e.target.checked;
     await acquireForMode(AppState.setupMode);
   });
+  $('#quality').addEventListener('change', (e) => { AppState.quality = e.target.value; savePrefs(); });
+  $('#format').addEventListener('change', (e) => { AppState.format = e.target.value; savePrefs(); });
+
+  // Studio layout. The preview reads AppState.studio every frame, so a
+  // change shows up without restarting anything.
+  $('#cam-size').addEventListener('change', (e) => { AppState.studio.cameraSize = e.target.value; savePrefs(); });
+  $('#studio-side').addEventListener('change', (e) => { AppState.studio.cameraSide = e.target.value; savePrefs(); });
+  $('#studio-shape').addEventListener('change', (e) => { AppState.studio.cameraShape = e.target.value; savePrefs(); });
+  $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
+
+  // Drop an image file onto the gallery to add it as a background.
+  const gallery = $('#bg-gallery');
+  gallery.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    gallery.classList.add('drag-over');
+  });
+  gallery.addEventListener('dragleave', () => gallery.classList.remove('drag-over'));
+  gallery.addEventListener('drop', (e) => {
+    e.preventDefault();
+    gallery.classList.remove('drag-over');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) addBackgroundFile(file);
+  });
 
   // Devices come and go (headset unplugged, external cam attached).
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
@@ -1528,13 +1861,16 @@ function initEvents() {
     }
     toast('Link copied — it only opens in this browser profile', 'success');
   });
-  $('#download-btn').addEventListener('click', () => {
+  const downloadCurrent = (format) => {
     const c = AppState.current;
     if (!c) return;
-    const a = document.createElement('a');
-    a.href = c.url;
-    a.download = `${c.title.replace(/[^\w\- ]+/g, '').trim() || 'pengu-recording'}.webm`;
-    a.click();
+    c.title = $('#preview-title').value.trim() || c.title;
+    downloadVideo(c, format);
+  };
+  $('#download-mp4-btn').addEventListener('click', () => downloadCurrent('mp4'));
+  $('#download-webm-btn').addEventListener('click', () => downloadCurrent('webm'));
+  $('#export-cancel').addEventListener('click', () => {
+    if (AppState.exportAbort) AppState.exportAbort.abort();
   });
   $('#save-btn').addEventListener('click', saveCurrent);
   $('#discard-btn').addEventListener('click', discardCurrent);
@@ -1551,6 +1887,7 @@ function initEvents() {
 
 /* ---------------- boot ---------------- */
 
+loadPrefs();
 initEvents();
 router();
 PenguDB.requestPersistence(); // keeps the browser from evicting saved videos

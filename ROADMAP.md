@@ -4,12 +4,14 @@ Ordered by impact. Checked items are shipped.
 
 ## High impact
 
-- [ ] **Real trim on export.** The sliders constrain playback only; the
-  downloaded file is still the full take. Plan: WebCodecs plus `mp4-muxer` or
-  `webm-muxer`, not ffmpeg.wasm (a 30 MB download) and not re-recording through
-  `MediaRecorder` (re-encodes, and takes as long as the video).
-- [ ] **MP4 output.** WebM does not open everywhere. Falls out of the WebCodecs
-  work above.
+- [ ] **Fast trim and conversion.** Downloads apply the trim and convert between
+  MP4 and WebM today, but by playing the take through a second `MediaRecorder`,
+  which takes as long as the clip. Plan: WebCodecs plus `mp4-muxer` or
+  `webm-muxer`, not ffmpeg.wasm (a 30 MB download).
+- [x] **MP4 output**, recorded directly as H.264 where the browser can, with
+  MP4 and WebM downloads for every take.
+- [x] **Studio layout**: screen and camera side by side on a background, with a
+  gallery and the user's own images.
 - [ ] **Drawing tools while recording** (pen, highlighter, arrows), drawn onto
   the compositing canvas so they land in the video. Note that screen only and
   camera only skip the canvas, so enabling drawing has to route them through it.
@@ -44,7 +46,7 @@ Ordered by impact. Checked items are shipped.
 - [x] Camera bubble positioned in coordinates of the shared surface
 - [x] IndexedDB split into metadata and blobs, so a view counter bump does not
       rewrite the video file
-- [x] Bitrate scaled to the frame size, 2 to 16 Mbps
+- [x] Bitrate scaled to the frame size, 2.5 to 40 Mbps, capture up to 4K
 - [x] Camera and microphone pickers, with hot-plug handling
 - [x] High-fidelity audio mode, so the echo canceller stops ducking shared
       system audio
