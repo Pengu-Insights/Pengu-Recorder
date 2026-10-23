@@ -97,6 +97,21 @@ const STUDIO_TEMPLATES = [
   { id: 'camera', label: 'Just you, for intros and outros' },
 ];
 
+/* Versions that can be recorded alongside the main Studio take. `opts`
+   override the main Studio settings; background, name and camera size carry over. */
+const EXTRA_OUTPUTS = [
+  { id: 'reel', label: 'Reel 9:16', title: 'Instagram Reel', detail: 'Split screen, you below',
+    kind: 'studio', opts: { aspect: 'reel', template: 'split', cameraSide: 'right' } },
+  { id: 'short', label: 'Short 9:16', title: 'YouTube Short', detail: 'Camera above the screen',
+    kind: 'studio', opts: { aspect: 'vertical', template: 'side', cameraSide: 'left' } },
+  { id: 'youtube', label: 'YouTube 16:9', title: 'YouTube video', detail: 'Screen and camera side by side',
+    kind: 'studio', opts: { aspect: 'landscape', template: 'side', cameraSide: 'right' } },
+  { id: 'screen', label: 'Screen only', title: 'Whole screen', detail: 'Just what you share, no camera', kind: 'screen' },
+  { id: 'camera', label: 'Camera only', title: 'All of you', detail: 'The full camera frame, as your camera films it', kind: 'camera' },
+];
+
+const ASPECT_LABELS = { landscape: 'YouTube 16:9', vertical: 'Short 9:16', reel: 'Reel 9:16' };
+
 function loadPrefs() {
   let saved = {};
   try {
@@ -111,6 +126,10 @@ function loadPrefs() {
     }
   }
   if (!PenguStudio.TEMPLATES.includes(AppState.studio.template)) AppState.studio.template = 'side';
+  const extras = saved.studio && saved.studio.extras;
+  AppState.studio.extras = Array.isArray(extras)
+    ? extras.filter((id) => EXTRA_OUTPUTS.some((o) => o.id === id))
+    : [];
   const wanted = saved.format === 'webm' || saved.format === 'mp4' ? saved.format : 'mp4';
   AppState.format = PenguRecorder.formatSupported(wanted) ? wanted
     : (PenguRecorder.formatSupported('mp4') ? 'mp4' : 'webm');
@@ -288,11 +307,71 @@ function applyStudioTemplate() {
   document.querySelectorAll('#template-picker .template-tile').forEach((b) => {
     b.setAttribute('aria-checked', b.dataset.template === t ? 'true' : 'false');
   });
+  renderExtraOutputs();
   if (studio) {
     $('#setup-hint').textContent = t === 'camera'
       ? 'Your browser will ask for camera and microphone access. No screen is shared in this layout.'
       : 'Your browser will ask which screen, window, or tab to share. It goes in the layout, with your camera.';
   }
+}
+
+/* ---------------- extra versions ---------------- */
+
+/** Why an extra cannot be recorded with the current setup, or '' when it can. */
+function extraUnavailable(o) {
+  const s = AppState.studio;
+  if (o.kind === 'studio' && o.opts.aspect === s.aspect && o.opts.template === s.template) {
+    return 'Same as your main layout';
+  }
+  if (o.kind === 'screen' && !needsScreen('studio')) return 'No screen in the "just you" layout';
+  if (o.kind === 'studio' && s.template === 'camera') return 'Needs a screen share';
+  return '';
+}
+
+function renderExtraOutputs() {
+  const box = $('#extra-outputs');
+  box.innerHTML = '';
+  for (const o of EXTRA_OUTPUTS) {
+    const why = extraUnavailable(o);
+    const label = document.createElement('label');
+    label.className = 'check-field extra-output';
+    label.classList.toggle('unavailable', !!why);
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !why && AppState.studio.extras.includes(o.id);
+    input.disabled = !!why;
+    input.addEventListener('change', () => {
+      const set = new Set(AppState.studio.extras);
+      if (input.checked) set.add(o.id); else set.delete(o.id);
+      AppState.studio.extras = EXTRA_OUTPUTS.map((x) => x.id).filter((id) => set.has(id));
+      savePrefs();
+    });
+    const text = document.createElement('span');
+    text.textContent = o.title;
+    const small = document.createElement('small');
+    small.textContent = why || o.detail;
+    text.appendChild(small);
+    label.append(input, text);
+    box.appendChild(label);
+  }
+}
+
+/** Specs for the recorder: the ticked extras that make sense for this take. */
+function extraSpecsFor(mode) {
+  if (mode !== 'studio') return [];
+  return EXTRA_OUTPUTS
+    .filter((o) => AppState.studio.extras.includes(o.id) && !extraUnavailable(o))
+    .map((o) => ({
+      id: o.id,
+      label: o.label,
+      kind: o.kind,
+      opts: o.kind === 'studio' ? { ...AppState.studio, ...o.opts } : null,
+    }));
+}
+
+function mainVersionLabel(mode) {
+  if (mode === 'studio') return ASPECT_LABELS[AppState.studio.aspect] || 'Studio';
+  return { 'screen-cam': 'Screen and camera', screen: 'Screen', camera: 'Camera' }[mode] || 'Video';
 }
 
 /* Thumbnails of every template, drawn by the real compositor with the
@@ -649,6 +728,7 @@ async function startRecording() {
   recorder.quality = AppState.quality;
   recorder.format = AppState.format;
   recorder.studio = { ...AppState.studio };
+  recorder.extraSpecs = extraSpecsFor(mode);
 
   if (needsScreen(mode)) {
     try {
@@ -884,21 +964,37 @@ async function finishRecording() {
   }
 
   const duration = Math.max(0.1, result.duration);
-  AppState.current = {
-    id: uuid(),
-    blob: result.blob,
-    url: URL.createObjectURL(result.blob),
+  const versions = [
+    { label: mainVersionLabel(AppState.setupMode), blob: result.blob, sessionId: result.sessionId },
+    ...(result.extras || []).map((e) => ({ label: e.label, blob: e.blob, sessionId: e.sessionId })),
+  ];
+  AppState.current = makeCurrent(versions, {
     duration,
     mode: AppState.setupMode,
     title: `Untitled video - ${fmtDate(Date.now())}`,
-    trimStart: 0,
-    trimEnd: duration,
     notes: AppState.notes,
     hasAudio: !!result.hasAudio,
-    mimeType: result.blob.type,
-    sessionId: result.sessionId, // recovery data, cleared on save or discard
-  };
+  });
   location.hash = '#/preview';
+}
+
+/* The post-recording working copy. A take can hold several versions (see
+   EXTRA_OUTPUTS); `blob` and `url` always point at the one on screen, and
+   the trim is shared because every version covers the same moments. */
+function makeCurrent(versions, fields) {
+  versions.forEach((v) => { v.url = URL.createObjectURL(v.blob); });
+  return {
+    id: uuid(),
+    versions,
+    active: 0,
+    blob: versions[0].blob,
+    url: versions[0].url,
+    mimeType: versions[0].blob.type,
+    sessionId: versions[0].sessionId, // recovery data, cleared on save or discard
+    trimStart: 0,
+    trimEnd: fields.duration,
+    ...fields,
+  };
 }
 
 async function cancelRecording() {
@@ -1424,10 +1520,48 @@ function probeDuration(url) {
 
 /* ---------------- preview view ---------------- */
 
+function setActiveVersion(index) {
+  const c = AppState.current;
+  const v = c.versions[index];
+  if (!v) return;
+  c.active = index;
+  c.blob = v.blob;
+  c.url = v.url;
+  c.mimeType = v.blob.type;
+  const video = $('#preview-video');
+  video.src = v.url;
+  video.addEventListener('loadedmetadata', () => { video.currentTime = c.trimStart; }, { once: true });
+  document.querySelectorAll('#version-tabs .version-tab').forEach((t, i) => {
+    t.setAttribute('aria-selected', i === index ? 'true' : 'false');
+  });
+}
+
+function renderVersionTabs() {
+  const c = AppState.current;
+  const tabs = $('#version-tabs');
+  const many = c.versions.length > 1;
+  tabs.classList.toggle('hidden', !many);
+  tabs.innerHTML = '';
+  if (many) {
+    c.versions.forEach((v, i) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'version-tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', i === c.active ? 'true' : 'false');
+      tab.textContent = v.label;
+      tab.addEventListener('click', () => setActiveVersion(i));
+      tabs.appendChild(tab);
+    });
+  }
+  $('#save-btn').textContent = many ? `Save all ${c.versions.length} versions` : 'Save to library';
+}
+
 function enterPreview() {
   const c = AppState.current;
   const video = $('#preview-video');
 
+  renderVersionTabs();
   video.src = c.url;
   $('#preview-audio-note').classList.toggle('hidden', c.hasAudio !== false);
   fixWebmDuration(video);
@@ -1506,44 +1640,58 @@ async function saveCurrent() {
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
 
-  const thumbnail = await makeThumbnail(c.url, c.trimStart + 0.5);
+  const versions = c.versions;
+  const many = versions.length > 1;
+  const saved = new Set(c.savedVersions || []);
   try {
-    await PenguDB.save({
-      id: c.id,
-      title: c.title,
-      createdAt: Date.now(),
-      duration: c.duration,
-      mode: c.mode,
-      trimStart: c.trimStart,
-      trimEnd: c.trimEnd,
-      thumbnail,
-      notes: c.notes || '',
-      views: 0, // real counter; incremented on each watch-view open
-      size: c.blob.size,
-      mimeType: c.blob.type,
-    }, c.blob);
+    // Each version becomes its own library video. Already-saved ones are
+    // skipped, so a retry after a storage error does not duplicate them.
+    for (let i = 0; i < versions.length; i++) {
+      if (saved.has(i)) continue;
+      const v = versions[i];
+      const thumbnail = await makeThumbnail(v.url, c.trimStart + 0.5);
+      await PenguDB.save({
+        id: i === 0 ? c.id : uuid(),
+        title: many ? `${c.title} · ${v.label}` : c.title,
+        createdAt: Date.now() + i, // keeps the versions in order in the library
+        duration: c.duration,
+        mode: c.mode,
+        trimStart: c.trimStart,
+        trimEnd: c.trimEnd,
+        thumbnail,
+        notes: c.notes || '',
+        views: 0, // real counter; incremented on each watch-view open
+        size: v.blob.size,
+        mimeType: v.blob.type,
+      }, v.blob);
+      saved.add(i);
+      c.savedVersions = [...saved];
+    }
 
-    if (c.sessionId) PenguDB.clearSession(c.sessionId).catch(() => {});
-    toast('Saved to library', 'success');
+    versions.forEach((v) => { if (v.sessionId) PenguDB.clearSession(v.sessionId).catch(() => {}); });
+    toast(many ? `${versions.length} versions saved to library` : 'Saved to library', 'success');
     AppState.current = null;
     location.hash = '#/';
   } catch (err) {
     const est = await PenguDB.estimate();
-    const hint = est && est.freeBytes < c.blob.size
+    const left = versions.filter((_, i) => !saved.has(i)).reduce((n, v) => n + v.blob.size, 0);
+    const hint = est && est.freeBytes < left
       ? 'not enough browser storage left — delete a video and retry'
       : 'storage error';
     toast(`Could not save: ${hint}`, 'error');
   } finally {
     saveBtn.disabled = false;
-    saveBtn.textContent = 'Save to library';
+    if (AppState.current) renderVersionTabs();
   }
 }
 
 function discardCurrent() {
   const c = AppState.current;
   if (c) {
-    URL.revokeObjectURL(c.url);
-    if (c.sessionId) PenguDB.clearSession(c.sessionId).catch(() => {});
+    for (const v of c.versions) {
+      URL.revokeObjectURL(v.url);
+      if (v.sessionId) PenguDB.clearSession(v.sessionId).catch(() => {});
+    }
   }
   AppState.current = null;
   toast('Recording discarded');
@@ -1749,11 +1897,16 @@ async function checkRecovery() {
   sessions = sessions.filter((s) => Date.now() - (s.updatedAt || 0) > 15000);
   if (!sessions.length) return;
 
-  // Newest orphaned session wins; older leftovers are dropped.
-  const [session, ...stale] = sessions;
-  stale.forEach((s) => PenguDB.clearSession(s.sessionId).catch(() => {}));
+  /* Newest orphaned take wins; older leftovers are dropped. Extra versions
+     (extraOf) ride along with the take they belong to. */
+  const mains = sessions.filter((s) => !s.extraOf);
+  const session = (mains.length ? mains : sessions)[0];
+  const extras = sessions.filter((s) => s.extraOf && s.extraOf === session.sessionId);
+  sessions
+    .filter((s) => s !== session && !extras.includes(s))
+    .forEach((s) => PenguDB.clearSession(s.sessionId).catch(() => {}));
 
-  AppState.recovery = session;
+  AppState.recovery = { ...session, extras };
   const banner = $('#recovery-banner');
   const secs = Math.round((session.durationMs || 0) / 1000);
   $('#recovery-detail').textContent =
@@ -1766,29 +1919,28 @@ async function restoreRecovery() {
   if (!session) return;
   $('#recovery-banner').classList.add('hidden');
 
-  const parts = await PenguDB.getChunks(session.sessionId);
-  if (!parts.length) {
+  const versions = [];
+  for (const s of [session, ...(session.extras || [])]) {
+    const parts = await PenguDB.getChunks(s.sessionId).catch(() => []);
+    if (!parts.length) continue;
+    const type = (s.mimeType || 'video/webm').split(';')[0];
+    versions.push({ label: s.label || 'Main', blob: new Blob(parts, { type }), sessionId: s.sessionId });
+  }
+  if (!versions.length) {
     toast('Nothing left to recover', 'error');
     return;
   }
-  const type = (session.mimeType || 'video/webm').split(';')[0];
-  const blob = new Blob(parts, { type });
-  const url = URL.createObjectURL(blob);
-  const probed = await withTimeout(probeDuration(url), 4000, null);
+  const probeUrl = URL.createObjectURL(versions[0].blob);
+  const probed = await withTimeout(probeDuration(probeUrl), 4000, null);
+  URL.revokeObjectURL(probeUrl);
   const duration = Math.max(0.1, probed || (session.durationMs || 0) / 1000 || 1);
 
-  AppState.current = {
-    id: uuid(),
-    blob,
-    url,
+  AppState.current = makeCurrent(versions, {
     duration,
     mode: session.mode || 'screen',
     title: `Recovered video - ${fmtDate(session.startedAt || Date.now())}`,
-    trimStart: 0,
-    trimEnd: duration,
     notes: '',
-    sessionId: session.sessionId,
-  };
+  });
   AppState.recovery = null;
   toast('Recording recovered', 'success');
   location.hash = '#/preview';
@@ -1798,7 +1950,11 @@ async function discardRecovery() {
   const session = AppState.recovery;
   AppState.recovery = null;
   $('#recovery-banner').classList.add('hidden');
-  if (session) await PenguDB.clearSession(session.sessionId).catch(() => {});
+  if (session) {
+    for (const s of [session, ...(session.extras || [])]) {
+      await PenguDB.clearSession(s.sessionId).catch(() => {});
+    }
+  }
   toast('Unsaved recording discarded');
 }
 
@@ -2017,13 +2173,18 @@ function initEvents() {
     const c = AppState.current;
     if (!c) return;
     c.title = $('#preview-title').value.trim() || c.title;
-    downloadVideo(c, format);
+    const v = c.versions[c.active];
+    const title = c.versions.length > 1 ? `${c.title} - ${v.label}` : c.title;
+    downloadVideo({ ...c, title }, format);
   };
   $('#download-mp4-btn').addEventListener('click', () => downloadCurrent('mp4'));
   $('#download-webm-btn').addEventListener('click', () => downloadCurrent('webm'));
   $('#thumb-btn').addEventListener('click', () => {
     const c = AppState.current;
-    if (c) saveThumbnail($('#preview-video'), $('#preview-title').value.trim() || c.title);
+    if (!c) return;
+    const base = $('#preview-title').value.trim() || c.title;
+    const many = c.versions.length > 1;
+    saveThumbnail($('#preview-video'), many ? `${base} - ${c.versions[c.active].label}` : base);
   });
   $('#export-cancel').addEventListener('click', () => {
     if (AppState.exportAbort) AppState.exportAbort.abort();

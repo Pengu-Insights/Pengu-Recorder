@@ -56,6 +56,15 @@ on the split screen with you underneath what you are showing. Vertical takes
 are 1080 x 1920. Pause on
 any frame and save it as a thumbnail at YouTube's size.
 
+**Several versions of one take.** Tick extra versions in Studio and one
+recording produces all of them at once, in sync: a Reel next to the YouTube
+video, a Short, the whole screen on its own, or the full camera frame on its
+own. The bare screen and camera versions skip the compositor, so they cost
+almost nothing. The review page switches between versions, the trim applies to
+all of them, saving puts each one in the library, and crash recovery brings
+them all back. Each composited version is another encode, so two or three at a
+time is the comfortable range for most computers.
+
 **MP4 or WebM, in high resolution.** Records straight to MP4 (H.264) in Chrome
 and Edge, or to WebM. Either take downloads in either format: the other one is
 re-encoded in the browser. Capture goes up to 4K, the camera asks for 1080p, and
