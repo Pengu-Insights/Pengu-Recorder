@@ -87,7 +87,14 @@ function withTimeout(promise, ms, fallback = null) {
    the app then starts from the defaults every time, which is fine. */
 
 const PREFS_KEY = 'pengu-recorder:prefs';
-const STUDIO_KEYS = ['aspect', 'cameraSide', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
+const STUDIO_KEYS = ['template', 'aspect', 'cameraSide', 'cameraCorner', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
+
+const STUDIO_TEMPLATES = [
+  { id: 'side', label: 'Side by side' },
+  { id: 'corner', label: 'Full screen, camera in a corner' },
+  { id: 'framed-corner', label: 'Framed screen, camera in a corner' },
+  { id: 'camera', label: 'Just you, for intros and outros' },
+];
 
 function loadPrefs() {
   let saved = {};
@@ -102,6 +109,7 @@ function loadPrefs() {
       if (typeof saved.studio[k] === 'string') AppState.studio[k] = saved.studio[k];
     }
   }
+  if (!PenguStudio.TEMPLATES.includes(AppState.studio.template)) AppState.studio.template = 'side';
   const wanted = saved.format === 'webm' || saved.format === 'mp4' ? saved.format : 'mp4';
   AppState.format = PenguRecorder.formatSupported(wanted) ? wanted
     : (PenguRecorder.formatSupported('mp4') ? 'mp4' : 'webm');
@@ -255,7 +263,72 @@ function applySetupControls() {
   $('#studio-side').value = AppState.studio.cameraSide;
   $('#studio-shape').value = AppState.studio.cameraShape;
   $('#studio-name').value = AppState.studio.name;
+  $('#studio-corner').value = AppState.studio.cameraCorner;
   applyStudioAspect();
+  applyStudioTemplate();
+}
+
+/** True when the take needs a screen share: every mode but camera only and
+    the Studio "just you" template. */
+function needsScreen(mode) {
+  if (mode === 'camera') return false;
+  return !(mode === 'studio' && AppState.studio.template === 'camera');
+}
+
+/* Show the controls that matter for the chosen template. */
+function applyStudioTemplate() {
+  const t = AppState.studio.template;
+  const studio = AppState.setupMode === 'studio';
+  $('#studio-side-field').classList.toggle('hidden', t !== 'side');
+  $('#studio-corner-field').classList.toggle('hidden', t !== 'corner' && t !== 'framed-corner');
+  $('#crop-field').classList.toggle('hidden', !needsScreen(AppState.setupMode));
+  document.querySelectorAll('#template-picker .template-tile').forEach((b) => {
+    b.setAttribute('aria-checked', b.dataset.template === t ? 'true' : 'false');
+  });
+  if (studio) {
+    $('#setup-hint').textContent = t === 'camera'
+      ? 'Your browser will ask for camera and microphone access. No screen is shared in this layout.'
+      : 'Your browser will ask which screen, window, or tab to share. It goes in the layout, with your camera.';
+  }
+}
+
+/* Thumbnails of every template, drawn by the real compositor with the
+   current background and camera options, so each tile shows what you get. */
+let templateThumbsJob = 0;
+async function renderTemplatePicker() {
+  const job = ++templateThumbsJob;
+  const picker = $('#template-picker');
+  const vertical = AppState.studio.aspect === 'vertical';
+  const [w, h] = vertical ? [108, 192] : [192, 108];
+  const background = await PenguBackgrounds.render(AppState.studio.backgroundId, w, h).catch(() => null);
+  if (job !== templateThumbsJob) return; // a newer render superseded this one
+
+  picker.classList.toggle('vertical', vertical);
+  picker.innerHTML = '';
+  for (const t of STUDIO_TEMPLATES) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'template-tile';
+    tile.dataset.template = t.id;
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-checked', t.id === AppState.studio.template ? 'true' : 'false');
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    PenguStudio.draw(canvas.getContext('2d'), w, h, {
+      background, screen: null, camera: null, placeholder: true,
+      opts: { ...AppState.studio, template: t.id, name: '' },
+    });
+    const label = document.createElement('span');
+    label.textContent = t.label;
+    tile.append(canvas, label);
+    tile.addEventListener('click', () => {
+      AppState.studio.template = t.id;
+      savePrefs();
+      applyStudioTemplate();
+    });
+    picker.appendChild(tile);
+  }
 }
 
 /* YouTube (16:9) or Shorts (9:16): the preview canvas takes the shape of
@@ -275,6 +348,7 @@ function applyStudioAspect() {
   $('#studio-side option[value="left"]').textContent = vertical ? 'Above the screen' : 'Left of the screen';
   $('#studio-side option[value="right"]').textContent = vertical ? 'Below the screen' : 'Right of the screen';
   refreshPreviewBackground();
+  renderTemplatePicker();
 }
 
 function selectModeButton(mode) {
@@ -293,10 +367,10 @@ function selectModeButton(mode) {
   $('#cam-size-label').textContent = studio ? 'Camera size' : 'Camera bubble size';
   if (studio) renderBackgroundGallery();
 
-  $('#setup-hint').textContent = {
-    camera: 'Your browser will ask for camera and microphone access.',
-    studio: 'Your browser will ask which screen, window, or tab to share. It goes in the frame, with your camera beside it.',
-  }[mode] || 'Your browser will ask which screen, window, or tab to share.';
+  $('#setup-hint').textContent = mode === 'camera'
+    ? 'Your browser will ask for camera and microphone access.'
+    : 'Your browser will ask which screen, window, or tab to share.';
+  applyStudioTemplate();
 }
 
 async function acquireForMode(mode) {
@@ -444,6 +518,7 @@ function selectBackground(id) {
     t.setAttribute('aria-checked', t.dataset.id === id ? 'true' : 'false');
   });
   refreshPreviewBackground();
+  renderTemplatePicker();
 }
 
 async function addBackgroundFile(file) {
@@ -453,6 +528,7 @@ async function addBackgroundFile(file) {
     savePrefs();
     await renderBackgroundGallery();
     refreshPreviewBackground();
+    renderTemplatePicker();
     toast('Background added', 'success');
   } catch (err) {
     toast(err && err.message === 'too-large'
@@ -467,6 +543,7 @@ async function removeBackgroundImage(id) {
   savePrefs();
   await renderBackgroundGallery();
   refreshPreviewBackground();
+  renderTemplatePicker();
   toast('Background removed');
 }
 
@@ -570,7 +647,7 @@ async function startRecording() {
   recorder.format = AppState.format;
   recorder.studio = { ...AppState.studio };
 
-  if (mode !== 'camera') {
+  if (needsScreen(mode)) {
     try {
       await recorder.acquireScreen();
     } catch (err) {
@@ -585,8 +662,8 @@ async function startRecording() {
       toast('No shared audio captured. Chrome records system sound only from a tab, or from the whole screen when you tick "Share system audio" (Windows). The microphone still records if it is on.');
     }
   }
-  if (mode === 'camera' && !recorder.cameraStream) {
-    toast('No camera available — cannot start a camera-only recording', 'error');
+  if (!needsScreen(mode) && !recorder.cameraStream) {
+    toast('No camera available — this recording needs a camera', 'error');
     return;
   }
 
@@ -595,7 +672,7 @@ async function startRecording() {
 
   /* Region crop. Confirming it is also a fresh user gesture, which is exactly
      what the Picture-in-Picture request below needs. */
-  if (mode !== 'camera' && $('#crop-step') && $('#crop-step').checked) {
+  if (needsScreen(mode) && $('#crop-step') && $('#crop-step').checked) {
     const confirmed = await openCropEditor();
     if (!confirmed) {
       recorder.cleanup();
@@ -618,7 +695,7 @@ async function startRecording() {
   // Caveat: notes live in a separate Picture-in-Picture window, so they are
   // never part of a tab or window share. Sharing the ENTIRE screen captures
   // whatever is on that monitor, the notes window included.
-  if (mode !== 'camera' && AppState.notes.trim() && !AppState.notesTipShown) {
+  if (needsScreen(mode) && AppState.notes.trim() && !AppState.notesTipShown) {
     AppState.notesTipShown = true;
     toast('Notes open in a separate window. If you share your entire screen, drag that window to another monitor or it will be recorded.');
   }
@@ -636,7 +713,7 @@ async function startRecording() {
   /* Sharing a whole monitor (or the browser window this tab sits in) captures
      the in-tab bar along with everything else. Say so once, with the way out. */
   const surface = recorder.getBubbleSpace().kind;
-  if (surface !== 'browser' && !$('#control-bar').classList.contains('hidden')) {
+  if (recorder.screenStream && surface !== 'browser' && !$('#control-bar').classList.contains('hidden')) {
     toast('This control bar is inside what you are sharing, so it will be in the video. Alt+H hides it — Alt+S still finishes.');
   }
 }
@@ -1830,9 +1907,15 @@ function initEvents() {
 
   // Studio layout. The preview reads AppState.studio every frame, so a
   // change shows up without restarting anything.
-  $('#cam-size').addEventListener('change', (e) => { AppState.studio.cameraSize = e.target.value; savePrefs(); });
-  $('#studio-side').addEventListener('change', (e) => { AppState.studio.cameraSide = e.target.value; savePrefs(); });
-  $('#studio-shape').addEventListener('change', (e) => { AppState.studio.cameraShape = e.target.value; savePrefs(); });
+  const studioChange = (key) => (e) => {
+    AppState.studio[key] = e.target.value;
+    savePrefs();
+    renderTemplatePicker();
+  };
+  $('#cam-size').addEventListener('change', studioChange('cameraSize'));
+  $('#studio-side').addEventListener('change', studioChange('cameraSide'));
+  $('#studio-shape').addEventListener('change', studioChange('cameraShape'));
+  $('#studio-corner').addEventListener('change', studioChange('cameraCorner'));
   $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
   document.querySelectorAll('.aspect-btn').forEach((btn) => {
     btn.addEventListener('click', () => {

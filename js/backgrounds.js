@@ -12,12 +12,26 @@
    ============================================================ */
 
 const PenguBackgrounds = (() => {
-  const DEFAULT_ID = 'preset:aurora';
+  const DEFAULT_ID = 'preset:blue-white';
   const MAX_UPLOAD_BYTES = 25e6;
 
   /* glows: [x, y, radius, colour, alpha] — x/y as fractions of the frame,
      radius as a fraction of its longer side. */
   const PRESETS = [
+    /* Blue and white first: the Pengu colours, and the light ones keep a
+       bright, clean look behind a dark screen. */
+    { id: 'blue-white', label: 'Blue & white', base: ['#FFFFFF', '#E6EFFD'], vignette: 0.04, grain: 0.5,
+      glows: [[0.00, 0.00, 0.55, '#1455C8', 0.40], [1.00, 1.00, 0.60, '#1455C8', 0.45], [0.85, 0.10, 0.35, '#7FB2FF', 0.35]] },
+    { id: 'sky', label: 'Sky', base: ['#F7FAFF', '#C9DDFB'], vignette: 0.04, grain: 0.5,
+      glows: [[0.20, 0.20, 0.50, '#FFFFFF', 0.90], [0.85, 0.85, 0.55, '#4B86E8', 0.35]] },
+    { id: 'blue-waves', label: 'Blue waves', kind: 'waves', base: ['#FFFFFF', '#E3EDFD'], line: '#1455C8',
+      vignette: 0.03, grain: 0.5, glows: [[0.50, 1.00, 0.55, '#4B86E8', 0.25]] },
+    { id: 'blue-grid', label: 'Blue grid', kind: 'grid', base: ['#FFFFFF', '#EDF3FE'], dot: 'rgba(20, 85, 200, 0.16)',
+      vignette: 0.03, grain: 0.5, glows: [[0.90, 0.10, 0.45, '#4B86E8', 0.25], [0.10, 0.90, 0.45, '#1455C8', 0.20]] },
+    { id: 'royal', label: 'Royal blue', base: ['#0B3A8C', '#1455C8'],
+      glows: [[0.15, 0.15, 0.50, '#FFFFFF', 0.22], [0.90, 0.90, 0.55, '#4B86E8', 0.55]] },
+    { id: 'blue-split', label: 'Blue & white split', kind: 'split', base: ['#FFFFFF', '#F1F6FF'], band: ['#0F409A', '#1455C8'],
+      vignette: 0.03, grain: 0.5, glows: [] },
     { id: 'aurora', label: 'Aurora', base: ['#0B1026', '#1B1F4B'],
       glows: [[0.12, 0.18, 0.55, '#19E3B1', 0.50], [0.88, 0.22, 0.50, '#7B5CFF', 0.60], [0.55, 1.00, 0.60, '#2E7BFF', 0.50]] },
     { id: 'pengu', label: 'Pengu', base: ['#0A2E6E', '#1455C8'],
@@ -125,10 +139,10 @@ const PenguBackgrounds = (() => {
     }
   }
 
-  function paintGrid(ctx, w, h) {
-    const gap = h / 27;
-    const r = Math.max(0.8, h / 700);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+  function paintGrid(ctx, w, h, p) {
+    const gap = Math.min(w, h) / 27;
+    const r = Math.max(0.8, Math.min(w, h) / 700);
+    ctx.fillStyle = p.dot || 'rgba(255, 255, 255, 0.10)';
     for (let y = gap / 2; y < h; y += gap) {
       for (let x = gap / 2; x < w; x += gap) {
         ctx.beginPath();
@@ -138,6 +152,27 @@ const PenguBackgrounds = (() => {
     }
   }
 
+  /* A diagonal blue band across a white field. */
+  function paintSplit(ctx, w, h, p) {
+    const g = ctx.createLinearGradient(0, h, w, 0);
+    g.addColorStop(0, p.band[0]);
+    g.addColorStop(1, p.band[1]);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.62);
+    ctx.lineTo(w, h * 0.30);
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20, 85, 200, 0.25)';
+    ctx.lineWidth = Math.max(2, Math.min(w, h) * 0.012);
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.57);
+    ctx.lineTo(w, h * 0.25);
+    ctx.stroke();
+  }
+
   function paintPreset(ctx, w, h, p) {
     const base = ctx.createLinearGradient(0, 0, w, h);
     base.addColorStop(0, p.base[0]);
@@ -145,7 +180,8 @@ const PenguBackgrounds = (() => {
     ctx.fillStyle = base;
     ctx.fillRect(0, 0, w, h);
 
-    if (p.kind === 'grid') paintGrid(ctx, w, h);
+    if (p.kind === 'grid') paintGrid(ctx, w, h, p);
+    if (p.kind === 'split') paintSplit(ctx, w, h, p);
 
     const m = Math.max(w, h);
     for (const [x, y, r, c, a] of p.glows || []) {

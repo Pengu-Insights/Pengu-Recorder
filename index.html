@@ -232,13 +232,27 @@
             </div>
 
             <div class="studio-head">
+              <span class="studio-title" id="template-label">Layout</span>
+            </div>
+            <div id="template-picker" class="template-picker" role="radiogroup" aria-labelledby="template-label"></div>
+
+            <div class="studio-head">
               <span class="studio-title" id="bg-gallery-label">Background</span>
               <span class="studio-sub">Pick one, or add your own image, like a wallpaper you made with an AI image generator. It stays in this browser.</span>
             </div>
             <div id="bg-gallery" class="bg-gallery" role="radiogroup" aria-labelledby="bg-gallery-label"></div>
 
             <div class="device-grid">
-              <label class="field">
+              <label class="field hidden" id="studio-corner-field">
+                <span>Camera corner</span>
+                <select id="studio-corner">
+                  <option value="br">Bottom right</option>
+                  <option value="bl">Bottom left</option>
+                  <option value="tr">Top right</option>
+                  <option value="tl">Top left</option>
+                </select>
+              </label>
+              <label class="field" id="studio-side-field">
                 <span>Camera position</span>
                 <select id="studio-side">
                   <option value="left">Left of the screen</option>

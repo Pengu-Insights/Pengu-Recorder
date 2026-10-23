@@ -39,10 +39,13 @@ enough to host your own copy.
 Screen only and camera only feed the source track straight into `MediaRecorder`
 with no canvas in between, so nothing is re-encoded and text stays sharp.
 
-**Studio layout.** Your screen in a rounded frame and your camera beside it, left
-or right, as a portrait, a square or a circle, on a background. Ten backgrounds
-are painted in the browser at the size of the take, so a 4K video gets a 4K
-backdrop. Add your own images too, for example wallpapers made with an AI image
+**Studio layouts.** Four templates, each previewed with your own background:
+the screen in a frame with your camera beside it; the screen edge to edge with
+your camera in a corner; the screen framed on the background with your camera in
+a corner; and just you, for intros and outros. The camera can be a portrait, a
+square or a circle, in any corner. Sixteen backgrounds, blue and white ones
+first, are painted in the browser at the size of the take, so a 4K video gets a
+4K backdrop. Add your own images too, for example wallpapers made with an AI image
 generator: they are kept in IndexedDB and never uploaded. An optional name tag
 sits under the camera. The setup screen shows a live preview of the layout.
 

@@ -1,10 +1,16 @@
 /* ============================================================
-   studio.js — the Studio layout: a backdrop, the shared screen in a
-   rounded frame, and the camera beside it.
+   studio.js — the Studio layouts: a backdrop, the shared screen and the
+   camera, arranged by a template.
 
-   Two shapes: a 16:9 YouTube video with the camera left or right of the
-   screen, and a 9:16 YouTube Short (also TikTok and Reels) with the camera
-   above or below it. The canvas size decides which; see layout().
+   Templates:
+     side           screen in a frame, camera beside it (above or below
+                    it in a Short)
+     corner         screen edge to edge, camera in a corner
+     framed-corner  screen in a frame on the backdrop, camera in a corner
+     camera         just the camera on the backdrop, for intros and outros
+
+   Two shapes: a 16:9 YouTube video and a 9:16 YouTube Short (also TikTok
+   and Reels). The canvas size decides which; see layout().
 
    Used twice with the same code, so the setup preview is a true preview
    of the take: by the recorder at the output size, and by the setup
@@ -14,9 +20,14 @@
 const PenguStudio = (() => {
   const CAMERA_WIDTH = { small: 0.2, medium: 0.26, large: 0.32 };
   const CAMERA_WIDTH_VERTICAL = { small: 0.5, medium: 0.62, large: 0.76 };
+  const CORNER_WIDTH = { small: 0.15, medium: 0.2, large: 0.26 };
+  const CORNER_WIDTH_VERTICAL = { small: 0.32, medium: 0.4, large: 0.5 };
+  const TEMPLATES = ['side', 'corner', 'framed-corner', 'camera'];
   const DEFAULTS = {
+    template: 'side',
     aspect: 'landscape',   // 'landscape' (YouTube, 16:9) | 'vertical' (Shorts, 9:16)
-    cameraSide: 'right',   // in vertical: 'left' = above the screen, 'right' = below
+    cameraSide: 'right',   // side template; in vertical 'left' = above the screen
+    cameraCorner: 'br',    // corner templates: 'br' | 'bl' | 'tr' | 'tl'
     cameraShape: 'portrait',
     cameraSize: 'medium',
     name: '',
@@ -28,11 +39,70 @@ const PenguStudio = (() => {
      painted once instead of 30 times a second. */
   const stages = new WeakMap();
 
-  /** Rects for the screen frame and the camera, in canvas pixels. */
+  /** { screen, cam, screenRadius } in canvas pixels; screen or cam may be null. */
   function layout(W, H, opts, screenAspect, hasCamera) {
-    return H > W
+    const U = Math.min(W, H);
+    if (opts.template === 'camera') return layoutCameraOnly(W, H, opts);
+    if (opts.template === 'corner' || opts.template === 'framed-corner') {
+      return layoutCorner(W, H, opts, screenAspect, hasCamera, opts.template === 'corner');
+    }
+    const L = H > W
       ? layoutVertical(W, H, opts, screenAspect, hasCamera)
       : layoutLandscape(W, H, opts, screenAspect, hasCamera);
+    return { ...L, screenRadius: Math.round(U * 0.016) };
+  }
+
+  /* The screen as large as the frame allows (edge to edge when `full`),
+     the camera tucked into a corner on top of it. */
+  function layoutCorner(W, H, opts, screenAspect, hasCamera, full) {
+    const U = Math.min(W, H);
+    const vertical = H > W;
+    const pad = full ? 0 : Math.round(U * 0.06);
+    const availW = W - 2 * pad;
+    const availH = H - 2 * pad;
+    let sw = availW;
+    let sh = sw / screenAspect;
+    if (sh > availH) {
+      sh = availH;
+      sw = sh * screenAspect;
+    }
+    sw = Math.round(sw);
+    sh = Math.round(sh);
+    const screen = { x: Math.round((W - sw) / 2), y: Math.round((H - sh) / 2), w: sw, h: sh };
+
+    let cam = null;
+    if (hasCamera) {
+      const widths = vertical ? CORNER_WIDTH_VERTICAL : CORNER_WIDTH;
+      const w = Math.round(W * (widths[opts.cameraSize] || widths.medium));
+      const h = opts.cameraShape === 'portrait' ? Math.round(w * 4 / 3) : w;
+      const margin = Math.round(U * 0.04);
+      // Leave room under the camera for the name tag that hangs off it.
+      const below = (opts.name || '').trim() ? Math.round(U * 0.03) : 0;
+      const corner = opts.cameraCorner || 'br';
+      cam = {
+        x: corner.includes('l') ? margin : W - margin - w,
+        y: corner.includes('t') ? margin : H - margin - below - h,
+        w,
+        h,
+      };
+    }
+    return { screen, cam, screenRadius: full ? 0 : Math.round(U * 0.016) };
+  }
+
+  /* No screen: the camera large and centred, for an intro or an outro. */
+  function layoutCameraOnly(W, H, opts) {
+    const vertical = H > W;
+    let w;
+    let h;
+    if (vertical) {
+      w = Math.round(W * 0.8);
+      h = opts.cameraShape === 'portrait' ? Math.round(w * 4 / 3) : w;
+    } else {
+      h = Math.round(H * 0.74);
+      w = opts.cameraShape === 'portrait' ? Math.round(h * 3 / 4) : h;
+    }
+    const cam = { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2), w, h };
+    return { screen: null, cam, screenRadius: 0 };
   }
 
   /* Shorts: the screen spans the width, the camera stacks above or below. */
@@ -143,7 +213,8 @@ const PenguStudio = (() => {
   }
 
   function getStage(ctx, W, H, background, L, opts) {
-    const key = [W, H, L.screen.x, L.screen.y, L.screen.w, L.screen.h,
+    const s = L.screen;
+    const key = [W, H, s ? `${s.x},${s.y},${s.w},${s.h},${L.screenRadius}` : '-',
       L.cam ? `${L.cam.x},${L.cam.y},${L.cam.w},${L.cam.h}` : '-', opts.cameraShape].join('|');
     const cached = stages.get(ctx);
     if (cached && cached.key === key && cached.background === background) return cached.canvas;
@@ -168,8 +239,10 @@ const PenguStudio = (() => {
     g.shadowBlur = U * 0.045;
     g.shadowOffsetY = U * 0.014;
     g.fillStyle = '#000';
-    roundRectPath(g, L.screen, Math.round(U * 0.016));
-    g.fill();
+    if (L.screen) {
+      roundRectPath(g, L.screen, L.screenRadius);
+      g.fill();
+    }
     if (L.cam) {
       camPath(g, L.cam, opts.cameraShape, U);
       g.fill();
@@ -205,11 +278,32 @@ const PenguStudio = (() => {
       ctx.fill();
     });
 
+    if (r.h < 60) return; // template thumbnails: too small to read
     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
     ctx.font = `600 ${Math.round(r.h * 0.065)}px Inter, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('Your screen goes here', r.x + r.w / 2, r.y + r.h * 0.72);
+  }
+
+  /* Stand-in for the camera: a simple head-and-shoulders silhouette. */
+  function paintPerson(ctx, r) {
+    const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+    g.addColorStop(0, '#E3ECFB');
+    g.addColorStop(1, '#B7CBEE');
+    ctx.fillStyle = g;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    const s = Math.min(r.w, r.h);
+    const cx = r.x + r.w / 2;
+    ctx.fillStyle = '#1455C8';
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.arc(cx, r.y + r.h * 0.42, s * 0.17, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(cx, r.y + r.h * 0.42 + s * 0.52, s * 0.34, s * 0.3, 0, Math.PI, 0);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   /** object-fit: cover from a video into a rect. */
@@ -235,9 +329,12 @@ const PenguStudio = (() => {
     const h = fs * 1.9;
     // Straddles the bottom edge of the camera, like a broadcast lower third.
     const r = { x: cam.x + (cam.w - w) / 2, y: cam.y + cam.h - h / 2, w, h };
-    ctx.fillStyle = 'rgba(15, 15, 30, 0.78)';
+    ctx.fillStyle = '#1455C8';
     roundRectPath(ctx, r, h / 2);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.lineWidth = Math.max(1.5, fs * 0.08);
+    ctx.stroke();
     ctx.fillStyle = '#FFFFFF';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -247,7 +344,8 @@ const PenguStudio = (() => {
   /**
    * Draw one Studio frame.
    * src: { background: canvas|null, screen: video|null, crop, camera: video|null,
-   *        opts, placeholder: bool (paint a stand-in when there is no screen) }
+   *        opts, placeholder: bool (paint stand-ins for a missing screen and
+   *        camera, for the setup preview and the template thumbnails) }
    */
   function draw(ctx, W, H, src) {
     const opts = { ...DEFAULTS, ...(src.opts || {}) };
@@ -267,22 +365,24 @@ const PenguStudio = (() => {
       aspect = sw / sh;
     }
 
-    const L = layout(W, H, opts, aspect, !!src.camera);
+    const L = layout(W, H, opts, aspect, !!(src.camera || src.placeholder));
     const U = Math.min(W, H);
     ctx.drawImage(getStage(ctx, W, H, src.background, L, opts), 0, 0);
 
-    ctx.save();
-    roundRectPath(ctx, L.screen, Math.round(U * 0.016));
-    ctx.clip();
-    if (screenReady) {
-      ctx.drawImage(screen, sx, sy, sw, sh, L.screen.x, L.screen.y, L.screen.w, L.screen.h);
-    } else if (src.placeholder) {
-      paintPlaceholder(ctx, L.screen);
-    } else {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(L.screen.x, L.screen.y, L.screen.w, L.screen.h);
+    if (L.screen) {
+      ctx.save();
+      roundRectPath(ctx, L.screen, L.screenRadius);
+      ctx.clip();
+      if (screenReady) {
+        ctx.drawImage(screen, sx, sy, sw, sh, L.screen.x, L.screen.y, L.screen.w, L.screen.h);
+      } else if (src.placeholder) {
+        paintPlaceholder(ctx, L.screen);
+      } else {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(L.screen.x, L.screen.y, L.screen.w, L.screen.h);
+      }
+      ctx.restore();
     }
-    ctx.restore();
 
     if (L.cam) {
       const cam = src.camera;
@@ -293,7 +393,8 @@ const PenguStudio = (() => {
       ctx.fillRect(L.cam.x, L.cam.y, L.cam.w, L.cam.h);
       // Not mirrored, same as the camera bubble: the video shows the real
       // orientation, so a sign or a T-shirt reads the right way round.
-      if (cam.readyState >= 2 && cam.videoWidth) drawCover(ctx, cam, L.cam);
+      if (cam && cam.readyState >= 2 && cam.videoWidth) drawCover(ctx, cam, L.cam);
+      else if (src.placeholder) paintPerson(ctx, L.cam);
       ctx.restore();
 
       ctx.save();
@@ -308,5 +409,5 @@ const PenguStudio = (() => {
     }
   }
 
-  return { draw, layout, DEFAULTS };
+  return { draw, layout, DEFAULTS, TEMPLATES };
 })();

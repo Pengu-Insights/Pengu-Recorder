@@ -425,7 +425,8 @@ class PenguRecorder {
   _setupCanvas() {
     this.canvas = document.createElement('canvas'); // intentionally never appended: hidden
 
-    this.screenVideo = this._makeSourceVideo(this.screenStream);
+    // No screen in the Studio "just you" template, only the camera.
+    this.screenVideo = this.screenStream ? this._makeSourceVideo(this.screenStream) : null;
     const s = this._trackSettings(this.screenStream);
     const scale = this.cropScale;
     // Even dimensions: odd ones make some encoders pad or refuse the frame.
