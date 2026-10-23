@@ -7,6 +7,8 @@
                     it in a Short)
      corner         screen edge to edge, camera in a corner
      framed-corner  screen in a frame on the backdrop, camera in a corner
+     split          two full-width panels: what you show on top, you below
+                    (the Reels look); side by side in a 16:9 video
      camera         just the camera on the backdrop, for intros and outros
 
    Two shapes: a 16:9 YouTube video and a 9:16 YouTube Short (also TikTok
@@ -22,11 +24,13 @@ const PenguStudio = (() => {
   const CAMERA_WIDTH_VERTICAL = { small: 0.5, medium: 0.62, large: 0.76 };
   const CORNER_WIDTH = { small: 0.15, medium: 0.2, large: 0.26 };
   const CORNER_WIDTH_VERTICAL = { small: 0.32, medium: 0.4, large: 0.5 };
-  const TEMPLATES = ['side', 'corner', 'framed-corner', 'camera'];
+  const SPLIT_SHARE = { small: 0.4, medium: 0.5, large: 0.6 };
+  const TEMPLATES = ['side', 'corner', 'framed-corner', 'split', 'camera'];
   const DEFAULTS = {
     template: 'side',
-    aspect: 'landscape',   // 'landscape' (YouTube, 16:9) | 'vertical' (Shorts, 9:16)
-    cameraSide: 'right',   // side template; in vertical 'left' = above the screen
+    // 'landscape' (YouTube, 16:9) | 'vertical' (Shorts, 9:16) | 'reel' (Reels, 9:16)
+    aspect: 'landscape',
+    cameraSide: 'right',   // side and split; in 9:16 'left' = above the screen
     cameraCorner: 'br',    // corner templates: 'br' | 'bl' | 'tr' | 'tl'
     cameraShape: 'portrait',
     cameraSize: 'medium',
@@ -39,10 +43,15 @@ const PenguStudio = (() => {
      painted once instead of 30 times a second. */
   const stages = new WeakMap();
 
-  /** { screen, cam, screenRadius } in canvas pixels; screen or cam may be null. */
+  /** { screen, cam, screenRadius, camShape? } in canvas pixels; screen or cam may be null. */
   function layout(W, H, opts, screenAspect, hasCamera) {
     const U = Math.min(W, H);
     if (opts.template === 'camera') return layoutCameraOnly(W, H, opts);
+    if (opts.template === 'split') {
+      return hasCamera
+        ? layoutSplit(W, H, opts, screenAspect)
+        : layoutCorner(W, H, opts, screenAspect, false, false);
+    }
     if (opts.template === 'corner' || opts.template === 'framed-corner') {
       return layoutCorner(W, H, opts, screenAspect, hasCamera, opts.template === 'corner');
     }
@@ -87,6 +96,54 @@ const PenguStudio = (() => {
       };
     }
     return { screen, cam, screenRadius: full ? 0 : Math.round(U * 0.016) };
+  }
+
+  /* Reels look: the screen in one full-width panel, the camera filling the
+     other. The camera panel takes a share of the height set by the camera
+     size; if the screen is shorter than its panel, the spare height goes to
+     the backdrop above and below rather than into black bars. */
+  function contain(area, aspect) {
+    let w = area.w;
+    let h = w / aspect;
+    if (h > area.h) {
+      h = area.h;
+      w = h * aspect;
+    }
+    w = Math.round(w);
+    h = Math.round(h);
+    return { x: area.x + Math.round((area.w - w) / 2), y: area.y + Math.round((area.h - h) / 2), w, h };
+  }
+
+  function layoutSplit(W, H, opts, screenAspect) {
+    const U = Math.min(W, H);
+    const pad = Math.round(U * 0.04);
+    const gap = Math.round(U * 0.03);
+    const share = SPLIT_SHARE[opts.cameraSize] || SPLIT_SHARE.medium;
+    const camFirst = opts.cameraSide === 'left';
+    let screen;
+    let cam;
+
+    if (H > W) {
+      const panelW = W - 2 * pad;
+      const avail = H - 2 * pad - gap;
+      const camH = Math.round(avail * share);
+      // Room for the name tag that hangs off the bottom of the camera.
+      const tag = !camFirst && (opts.name || '').trim() ? Math.round(U * 0.03) : 0;
+      const screenH = Math.min(avail - camH - tag, Math.round(panelW / screenAspect));
+      screen = contain({ x: pad, y: 0, w: panelW, h: screenH }, screenAspect);
+      const total = screen.h + gap + camH;
+      const y0 = Math.round((H - total - tag) / 2);
+      cam = { x: pad, y: camFirst ? y0 : y0 + screen.h + gap, w: panelW, h: camH };
+      screen.y = camFirst ? y0 + camH + gap : y0;
+    } else {
+      const panelH = H - 2 * pad;
+      const avail = W - 2 * pad - gap;
+      const camW = Math.round(avail * share * 0.7);
+      const area = { x: camFirst ? pad + camW + gap : pad, y: pad, w: avail - camW, h: panelH };
+      screen = contain(area, screenAspect);
+      cam = { x: camFirst ? pad : W - pad - camW, y: pad, w: camW, h: panelH };
+    }
+    return { screen, cam, screenRadius: Math.round(U * 0.03), camShape: 'panel' };
   }
 
   /* No screen: the camera large and centred, for an intro or an outro. */
@@ -215,7 +272,7 @@ const PenguStudio = (() => {
   function getStage(ctx, W, H, background, L, opts) {
     const s = L.screen;
     const key = [W, H, s ? `${s.x},${s.y},${s.w},${s.h},${L.screenRadius}` : '-',
-      L.cam ? `${L.cam.x},${L.cam.y},${L.cam.w},${L.cam.h}` : '-', opts.cameraShape].join('|');
+      L.cam ? `${L.cam.x},${L.cam.y},${L.cam.w},${L.cam.h}` : '-', L.camShape || opts.cameraShape].join('|');
     const cached = stages.get(ctx);
     if (cached && cached.key === key && cached.background === background) return cached.canvas;
 
@@ -244,7 +301,7 @@ const PenguStudio = (() => {
       g.fill();
     }
     if (L.cam) {
-      camPath(g, L.cam, opts.cameraShape, U);
+      camPath(g, L.cam, L.camShape || opts.cameraShape, U);
       g.fill();
     }
     g.restore();
@@ -387,7 +444,7 @@ const PenguStudio = (() => {
     if (L.cam) {
       const cam = src.camera;
       ctx.save();
-      camPath(ctx, L.cam, opts.cameraShape, U);
+      camPath(ctx, L.cam, L.camShape || opts.cameraShape, U);
       ctx.clip();
       ctx.fillStyle = '#1C1E2B';
       ctx.fillRect(L.cam.x, L.cam.y, L.cam.w, L.cam.h);
@@ -398,7 +455,7 @@ const PenguStudio = (() => {
       ctx.restore();
 
       ctx.save();
-      camPath(ctx, L.cam, opts.cameraShape, U);
+      camPath(ctx, L.cam, L.camShape || opts.cameraShape, U);
       ctx.lineWidth = Math.max(2, U * 0.004);
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
       ctx.stroke();

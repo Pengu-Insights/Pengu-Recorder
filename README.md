@@ -39,19 +39,21 @@ enough to host your own copy.
 Screen only and camera only feed the source track straight into `MediaRecorder`
 with no canvas in between, so nothing is re-encoded and text stays sharp.
 
-**Studio layouts.** Four templates, each previewed with your own background:
+**Studio layouts.** Five templates, each previewed with your own background:
 the screen in a frame with your camera beside it; the screen edge to edge with
 your camera in a corner; the screen framed on the background with your camera in
-a corner; and just you, for intros and outros. The camera can be a portrait, a
-square or a circle, in any corner. Sixteen backgrounds, blue and white ones
-first, are painted in the browser at the size of the take, so a 4K video gets a
+a corner; a split screen, what you show on top and you below; and just you, for
+intros and outros. The camera can be a portrait, a
+square or a circle, in any corner. Twenty-two backgrounds, blue and white
+gradients first, are painted in the browser at the size of the take, so a 4K video gets a
 4K backdrop. Add your own images too, for example wallpapers made with an AI image
 generator: they are kept in IndexedDB and never uploaded. An optional name tag
 sits under the camera. The setup screen shows a live preview of the layout.
 
-**Made for YouTube.** Studio records either a 16:9 YouTube video, with the
-camera left or right of the screen, or a 9:16 YouTube Short (also right for
-TikTok and Reels) at 1080 x 1920, with the camera above or below it. Pause on
+**Made for YouTube and Reels.** Studio records a 16:9 YouTube video, a 9:16
+YouTube Short (also right for TikTok), or a 9:16 Instagram Reel, which starts
+on the split screen with you underneath what you are showing. Vertical takes
+are 1080 x 1920. Pause on
 any frame and save it as a thumbnail at YouTube's size.
 
 **MP4 or WebM, in high resolution.** Records straight to MP4 (H.264) in Chrome

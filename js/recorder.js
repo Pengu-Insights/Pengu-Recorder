@@ -156,7 +156,7 @@ class PenguRecorder {
     return Math.min(40_000_000, Math.max(2_500_000, bits));
   }
 
-  /* Studio output size: 16:9 for a YouTube video, 9:16 for a Short,
+  /* Studio output size: 16:9 for a YouTube video, 9:16 for a Short or a Reel,
      whatever the shape of the shared surface, because the backdrop is what
      fills the frame. 'auto' goes up to 1440p when the screen is big enough
      to fill it, and stays at 1080 x 1920 for Shorts, YouTube's own target. */
@@ -167,7 +167,7 @@ class PenguRecorder {
       '1080p': { w: 1920, h: 1080 },
       '720p': { w: 1280, h: 720 },
     };
-    const vertical = aspect === 'vertical';
+    const vertical = aspect === 'vertical' || aspect === 'reel';
     let size = sizes[quality];
     if (!size) size = !vertical && (sourceHeight || 0) >= 1400 ? sizes['1440p'] : sizes['1080p'];
     return vertical ? { w: size.h, h: size.w } : size;

@@ -93,6 +93,7 @@ const STUDIO_TEMPLATES = [
   { id: 'side', label: 'Side by side' },
   { id: 'corner', label: 'Full screen, camera in a corner' },
   { id: 'framed-corner', label: 'Framed screen, camera in a corner' },
+  { id: 'split', label: 'Split screen: what you show, then you' },
   { id: 'camera', label: 'Just you, for intros and outros' },
 ];
 
@@ -279,7 +280,9 @@ function needsScreen(mode) {
 function applyStudioTemplate() {
   const t = AppState.studio.template;
   const studio = AppState.setupMode === 'studio';
-  $('#studio-side-field').classList.toggle('hidden', t !== 'side');
+  $('#studio-side-field').classList.toggle('hidden', t !== 'side' && t !== 'split');
+  // Split panels are always rounded rectangles, so the shape picker does not apply.
+  $('#studio-shape').closest('.field').classList.toggle('hidden', t === 'split');
   $('#studio-corner-field').classList.toggle('hidden', t !== 'corner' && t !== 'framed-corner');
   $('#crop-field').classList.toggle('hidden', !needsScreen(AppState.setupMode));
   document.querySelectorAll('#template-picker .template-tile').forEach((b) => {
@@ -298,7 +301,7 @@ let templateThumbsJob = 0;
 async function renderTemplatePicker() {
   const job = ++templateThumbsJob;
   const picker = $('#template-picker');
-  const vertical = AppState.studio.aspect === 'vertical';
+  const vertical = AppState.studio.aspect !== 'landscape';
   const [w, h] = vertical ? [108, 192] : [192, 108];
   const background = await PenguBackgrounds.render(AppState.studio.backgroundId, w, h).catch(() => null);
   if (job !== templateThumbsJob) return; // a newer render superseded this one
@@ -334,7 +337,7 @@ async function renderTemplatePicker() {
 /* YouTube (16:9) or Shorts (9:16): the preview canvas takes the shape of
    the video, and "left/right of the screen" becomes "above/below". */
 function applyStudioAspect() {
-  const vertical = AppState.studio.aspect === 'vertical';
+  const vertical = AppState.studio.aspect !== 'landscape';
   document.querySelectorAll('.aspect-btn').forEach((b) => {
     b.setAttribute('aria-checked', b.dataset.aspect === AppState.studio.aspect ? 'true' : 'false');
   });
@@ -1919,14 +1922,19 @@ function initEvents() {
   $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
   document.querySelectorAll('.aspect-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      AppState.studio.aspect = btn.dataset.aspect;
-      // A Short is watched on a phone: the camera reads best on top.
-      if (btn.dataset.aspect === 'vertical') {
-        AppState.studio.cameraSide = 'left';
-        $('#studio-side').value = 'left';
+      const aspect = btn.dataset.aspect;
+      AppState.studio.aspect = aspect;
+      // A Short is watched on a phone: the camera reads best on top. A Reel
+      // shows what you are talking about on top, with you underneath.
+      if (aspect === 'vertical') AppState.studio.cameraSide = 'left';
+      if (aspect === 'reel') {
+        AppState.studio.template = 'split';
+        AppState.studio.cameraSide = 'right';
       }
+      $('#studio-side').value = AppState.studio.cameraSide;
       savePrefs();
       applyStudioAspect();
+      applyStudioTemplate();
     });
   });
 

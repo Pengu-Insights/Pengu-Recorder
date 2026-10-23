@@ -20,6 +20,20 @@ const PenguBackgrounds = (() => {
   const PRESETS = [
     /* Blue and white first: the Pengu colours, and the light ones keep a
        bright, clean look behind a dark screen. */
+    /* Pure gradients, blue into white. `dir` picks the direction; `base`
+       can hold any number of stops. */
+    { id: 'fade-down', label: 'Blue to white', dir: 'vertical', base: ['#1455C8', '#5E95EC', '#FFFFFF'],
+      vignette: 0, grain: 0.6, glows: [] },
+    { id: 'fade-up', label: 'White to blue', dir: 'vertical', base: ['#FFFFFF', '#AFCBF6', '#1455C8'],
+      vignette: 0, grain: 0.6, glows: [] },
+    { id: 'fade-diagonal', label: 'Blue diagonal', base: ['#0F409A', '#4B86E8', '#FFFFFF'],
+      vignette: 0, grain: 0.6, glows: [] },
+    { id: 'fade-glow', label: 'White glow', dir: 'radial', base: ['#FFFFFF', '#D6E5FC', '#1455C8'],
+      vignette: 0, grain: 0.6, glows: [] },
+    { id: 'fade-side', label: 'Blue edges', dir: 'horizontal', base: ['#4B86E8', '#FFFFFF', '#4B86E8'],
+      vignette: 0, grain: 0.6, glows: [] },
+    { id: 'fade-deep', label: 'Deep blue fade', dir: 'vertical', base: ['#061A44', '#1455C8', '#CFE0FB'],
+      vignette: 0.15, grain: 0.8, glows: [] },
     { id: 'blue-white', label: 'Blue & white', base: ['#FFFFFF', '#E6EFFD'], vignette: 0.04, grain: 0.5,
       glows: [[0.00, 0.00, 0.55, '#1455C8', 0.40], [1.00, 1.00, 0.60, '#1455C8', 0.45], [0.85, 0.10, 0.35, '#7FB2FF', 0.35]] },
     { id: 'sky', label: 'Sky', base: ['#F7FAFF', '#C9DDFB'], vignette: 0.04, grain: 0.5,
@@ -173,10 +187,18 @@ const PenguBackgrounds = (() => {
     ctx.stroke();
   }
 
+  function baseGradient(ctx, w, h, dir) {
+    if (dir === 'vertical') return ctx.createLinearGradient(0, 0, 0, h);
+    if (dir === 'horizontal') return ctx.createLinearGradient(0, 0, w, 0);
+    if (dir === 'radial') {
+      return ctx.createRadialGradient(w / 2, h * 0.45, 0, w / 2, h * 0.45, Math.hypot(w, h) * 0.6);
+    }
+    return ctx.createLinearGradient(0, 0, w, h);
+  }
+
   function paintPreset(ctx, w, h, p) {
-    const base = ctx.createLinearGradient(0, 0, w, h);
-    base.addColorStop(0, p.base[0]);
-    base.addColorStop(1, p.base[1]);
+    const base = baseGradient(ctx, w, h, p.dir);
+    p.base.forEach((c, i) => base.addColorStop(i / (p.base.length - 1), c));
     ctx.fillStyle = base;
     ctx.fillRect(0, 0, w, h);
 
