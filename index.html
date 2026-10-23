@@ -123,7 +123,7 @@
             <button class="mode-btn" data-mode="studio">
               <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 4h18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm1 3v10h10V7H4zm13 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-3 7.5h6c0-1.7-1.3-2.5-3-2.5s-3 .8-3 2.5z"/></svg>
               <strong>Studio</strong>
-              <small>Screen and camera side by side, on a background</small>
+              <small>For YouTube and Shorts: screen and camera together on a background</small>
             </button>
             <button class="mode-btn" data-mode="screen">
               <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 4h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
@@ -218,6 +218,19 @@
 
           <!-- Studio layout: backdrop gallery and camera placement -->
           <div id="studio-panel" class="studio-panel hidden">
+            <div class="aspect-picker" role="radiogroup" aria-label="Made for">
+              <button type="button" class="aspect-btn" data-aspect="landscape" role="radio">
+                <span class="aspect-icon aspect-icon--landscape" aria-hidden="true"></span>
+                <strong>YouTube video</strong>
+                <small>16:9 horizontal</small>
+              </button>
+              <button type="button" class="aspect-btn" data-aspect="vertical" role="radio">
+                <span class="aspect-icon aspect-icon--vertical" aria-hidden="true"></span>
+                <strong>YouTube Shorts</strong>
+                <small>9:16 vertical, also TikTok and Reels</small>
+              </button>
+            </div>
+
             <div class="studio-head">
               <span class="studio-title" id="bg-gallery-label">Background</span>
               <span class="studio-sub">Pick one, or add your own image, like a wallpaper you made with an AI image generator. It stays in this browser.</span>
@@ -288,6 +301,7 @@
               <button id="download-mp4-btn" class="btn btn-outline">Download MP4</button>
               <button id="download-webm-btn" class="btn btn-outline">Download WebM</button>
             </div>
+            <button id="thumb-btn" class="btn btn-ghost btn-block">Save thumbnail from this frame</button>
             <p class="download-note">Downloads keep your trim. Converting or trimming re-encodes the video, which takes as long as the clip.</p>
             <button id="save-btn" class="btn btn-primary btn-block">Save to library</button>
             <button id="discard-btn" class="btn btn-danger-ghost btn-block">Discard</button>
@@ -302,6 +316,7 @@
           <span class="header-spacer"></span>
           <button id="watch-download-mp4" class="btn btn-outline">Download MP4</button>
           <button id="watch-download-webm" class="btn btn-outline">Download WebM</button>
+          <button id="watch-thumb" class="btn btn-ghost" title="Save the current frame as a YouTube thumbnail">Thumbnail</button>
           <button id="watch-delete" class="btn btn-danger-ghost">Delete</button>
         </header>
         <div class="watch-layout">

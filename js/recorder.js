@@ -156,18 +156,21 @@ class PenguRecorder {
     return Math.min(40_000_000, Math.max(2_500_000, bits));
   }
 
-  /* Studio output size. The canvas is always 16:9 because the backdrop is
-     what fills it, whatever the shape of the shared surface. 'auto' goes
-     up to 1440p when the screen is big enough to fill it. */
-  static studioSize(quality, sourceHeight) {
+  /* Studio output size: 16:9 for a YouTube video, 9:16 for a Short,
+     whatever the shape of the shared surface, because the backdrop is what
+     fills the frame. 'auto' goes up to 1440p when the screen is big enough
+     to fill it, and stays at 1080 x 1920 for Shorts, YouTube's own target. */
+  static studioSize(quality, sourceHeight, aspect = 'landscape') {
     const sizes = {
       '2160p': { w: 3840, h: 2160 },
       '1440p': { w: 2560, h: 1440 },
       '1080p': { w: 1920, h: 1080 },
       '720p': { w: 1280, h: 720 },
     };
-    if (sizes[quality]) return sizes[quality];
-    return (sourceHeight || 0) >= 1400 ? sizes['1440p'] : sizes['1080p'];
+    const vertical = aspect === 'vertical';
+    let size = sizes[quality];
+    if (!size) size = !vertical && (sourceHeight || 0) >= 1400 ? sizes['1440p'] : sizes['1080p'];
+    return vertical ? { w: size.h, h: size.w } : size;
   }
 
   static micConstraints(deviceId, hiFi) {
@@ -428,7 +431,7 @@ class PenguRecorder {
     // Even dimensions: odd ones make some encoders pad or refuse the frame.
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
     if (this.mode === 'studio') {
-      const size = PenguRecorder.studioSize(this.quality, s.height);
+      const size = PenguRecorder.studioSize(this.quality, s.height, this.studio.aspect);
       this.canvas.width = size.w;
       this.canvas.height = size.h;
     } else {

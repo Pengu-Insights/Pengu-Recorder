@@ -46,6 +46,11 @@ backdrop. Add your own images too, for example wallpapers made with an AI image
 generator: they are kept in IndexedDB and never uploaded. An optional name tag
 sits under the camera. The setup screen shows a live preview of the layout.
 
+**Made for YouTube.** Studio records either a 16:9 YouTube video, with the
+camera left or right of the screen, or a 9:16 YouTube Short (also right for
+TikTok and Reels) at 1080 x 1920, with the camera above or below it. Pause on
+any frame and save it as a thumbnail at YouTube's size.
+
 **MP4 or WebM, in high resolution.** Records straight to MP4 (H.264) in Chrome
 and Edge, or to WebM. Either take downloads in either format: the other one is
 re-encoded in the browser. Capture goes up to 4K, the camera asks for 1080p, and

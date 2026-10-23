@@ -1043,10 +1043,61 @@ body {
   width: 100%;
   height: auto;
   aspect-ratio: 16 / 9;
+  margin: 0 auto;
   border-radius: var(--radius);
   background: var(--ink);
   box-shadow: 0 0 0 1px var(--line), var(--shadow-lift);
 }
+
+#studio-preview.vertical {
+  width: auto;
+  height: min(520px, 70vh);
+  aspect-ratio: 9 / 16;
+}
+
+/* YouTube video / Shorts picker */
+.aspect-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.aspect-btn {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink-soft);
+  font-family: var(--font);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.aspect-btn:hover { border-color: var(--brand-light); }
+.aspect-btn strong { font-size: 13.5px; color: var(--ink); }
+.aspect-btn small { grid-column: 2; font-size: 12px; color: var(--ink-faint); }
+
+.aspect-btn[aria-checked="true"] {
+  border-color: var(--brand);
+  background: var(--brand-ghost);
+}
+
+.aspect-icon {
+  grid-row: 1 / span 2;
+  display: block;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+}
+
+.aspect-icon--landscape { width: 32px; height: 18px; }
+.aspect-icon--vertical { width: 14px; height: 24px; margin: 0 9px; }
+.aspect-btn[aria-checked="true"] .aspect-icon { color: var(--brand); }
 
 .studio-panel {
   display: flex;
@@ -1217,4 +1268,5 @@ body {
 
 @media (max-width: 900px) {
   .view-header { flex-wrap: wrap; }
+  .aspect-picker { grid-template-columns: 1fr; }
 }

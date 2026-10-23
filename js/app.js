@@ -87,7 +87,7 @@ function withTimeout(promise, ms, fallback = null) {
    the app then starts from the defaults every time, which is fine. */
 
 const PREFS_KEY = 'pengu-recorder:prefs';
-const STUDIO_KEYS = ['cameraSide', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
+const STUDIO_KEYS = ['aspect', 'cameraSide', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
 
 function loadPrefs() {
   let saved = {};
@@ -255,6 +255,26 @@ function applySetupControls() {
   $('#studio-side').value = AppState.studio.cameraSide;
   $('#studio-shape').value = AppState.studio.cameraShape;
   $('#studio-name').value = AppState.studio.name;
+  applyStudioAspect();
+}
+
+/* YouTube (16:9) or Shorts (9:16): the preview canvas takes the shape of
+   the video, and "left/right of the screen" becomes "above/below". */
+function applyStudioAspect() {
+  const vertical = AppState.studio.aspect === 'vertical';
+  document.querySelectorAll('.aspect-btn').forEach((b) => {
+    b.setAttribute('aria-checked', b.dataset.aspect === AppState.studio.aspect ? 'true' : 'false');
+  });
+  const canvas = $('#studio-preview');
+  const [w, h] = vertical ? [540, 960] : [960, 540];
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  canvas.classList.toggle('vertical', vertical);
+  $('#studio-side option[value="left"]').textContent = vertical ? 'Above the screen' : 'Left of the screen';
+  $('#studio-side option[value="right"]').textContent = vertical ? 'Below the screen' : 'Right of the screen';
+  refreshPreviewBackground();
 }
 
 function selectModeButton(mode) {
@@ -1450,6 +1470,34 @@ function discardCurrent() {
   location.hash = '#/';
 }
 
+/* ---------------- thumbnails ---------------- */
+
+/* The frame on screen, as a JPEG at YouTube's thumbnail size: 1280 x 720
+   for a video, 1080 x 1920 for a Short. Cover-fit, so an odd-shaped take
+   is cropped rather than letterboxed. */
+function saveThumbnail(video, title) {
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    toast('The video is still loading. Try again in a moment.', 'error');
+    return;
+  }
+  const vertical = video.videoHeight > video.videoWidth;
+  const [W, H] = vertical ? [1080, 1920] : [1280, 720];
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const scale = Math.max(W / video.videoWidth, H / video.videoHeight);
+  const sw = W / scale;
+  const sh = H / scale;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(video, (video.videoWidth - sw) / 2, (video.videoHeight - sh) / 2, sw, sh, 0, 0, W, H);
+  canvas.toBlob((blob) => {
+    if (!blob) { toast('Could not capture this frame', 'error'); return; }
+    triggerDownload(blob, `${safeFileName(title)} - thumbnail.jpg`);
+    toast(`Thumbnail saved (${W} x ${H}). Pause on another frame to pick a different one.`, 'success');
+  }, 'image/jpeg', 0.92);
+}
+
 /* ---------------- downloads: MP4 / WebM, trimmed ---------------- */
 
 function safeFileName(title) {
@@ -1597,6 +1645,7 @@ async function enterWatch(id) {
   });
   $('#watch-download-mp4').onclick = () => downloadVideo(asDownload(), 'mp4');
   $('#watch-download-webm').onclick = () => downloadVideo(asDownload(), 'webm');
+  $('#watch-thumb').onclick = () => saveThumbnail(video, record.title);
 
   $('#watch-delete').onclick = async () => {
     await PenguDB.remove(record.id);
@@ -1785,6 +1834,18 @@ function initEvents() {
   $('#studio-side').addEventListener('change', (e) => { AppState.studio.cameraSide = e.target.value; savePrefs(); });
   $('#studio-shape').addEventListener('change', (e) => { AppState.studio.cameraShape = e.target.value; savePrefs(); });
   $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
+  document.querySelectorAll('.aspect-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      AppState.studio.aspect = btn.dataset.aspect;
+      // A Short is watched on a phone: the camera reads best on top.
+      if (btn.dataset.aspect === 'vertical') {
+        AppState.studio.cameraSide = 'left';
+        $('#studio-side').value = 'left';
+      }
+      savePrefs();
+      applyStudioAspect();
+    });
+  });
 
   // Drop an image file onto the gallery to add it as a background.
   const gallery = $('#bg-gallery');
@@ -1869,6 +1930,10 @@ function initEvents() {
   };
   $('#download-mp4-btn').addEventListener('click', () => downloadCurrent('mp4'));
   $('#download-webm-btn').addEventListener('click', () => downloadCurrent('webm'));
+  $('#thumb-btn').addEventListener('click', () => {
+    const c = AppState.current;
+    if (c) saveThumbnail($('#preview-video'), $('#preview-title').value.trim() || c.title);
+  });
   $('#export-cancel').addEventListener('click', () => {
     if (AppState.exportAbort) AppState.exportAbort.abort();
   });

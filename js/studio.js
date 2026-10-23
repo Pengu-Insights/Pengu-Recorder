@@ -2,6 +2,10 @@
    studio.js — the Studio layout: a backdrop, the shared screen in a
    rounded frame, and the camera beside it.
 
+   Two shapes: a 16:9 YouTube video with the camera left or right of the
+   screen, and a 9:16 YouTube Short (also TikTok and Reels) with the camera
+   above or below it. The canvas size decides which; see layout().
+
    Used twice with the same code, so the setup preview is a true preview
    of the take: by the recorder at the output size, and by the setup
    screen on a small canvas with a placeholder where the screen will go.
@@ -9,7 +13,14 @@
 
 const PenguStudio = (() => {
   const CAMERA_WIDTH = { small: 0.2, medium: 0.26, large: 0.32 };
-  const DEFAULTS = { cameraSide: 'right', cameraShape: 'portrait', cameraSize: 'medium', name: '' };
+  const CAMERA_WIDTH_VERTICAL = { small: 0.5, medium: 0.62, large: 0.76 };
+  const DEFAULTS = {
+    aspect: 'landscape',   // 'landscape' (YouTube, 16:9) | 'vertical' (Shorts, 9:16)
+    cameraSide: 'right',   // in vertical: 'left' = above the screen, 'right' = below
+    cameraShape: 'portrait',
+    cameraSize: 'medium',
+    name: '',
+  };
   const NO_CROP = { top: 0, right: 0, bottom: 0, left: 0 };
 
   /* Backdrop plus drop shadows, cached per context. Shadows are the costly
@@ -19,6 +30,57 @@ const PenguStudio = (() => {
 
   /** Rects for the screen frame and the camera, in canvas pixels. */
   function layout(W, H, opts, screenAspect, hasCamera) {
+    return H > W
+      ? layoutVertical(W, H, opts, screenAspect, hasCamera)
+      : layoutLandscape(W, H, opts, screenAspect, hasCamera);
+  }
+
+  /* Shorts: the screen spans the width, the camera stacks above or below. */
+  function layoutVertical(W, H, opts, screenAspect, hasCamera) {
+    const pad = Math.round(W * 0.06);
+    const gap = Math.round(W * 0.05);
+    const availW = W - 2 * pad;
+    const availH = H - 2 * pad;
+
+    let sw = availW;
+    let sh = sw / screenAspect;
+    // A tall shared window must still leave room for the camera.
+    const maxScreenH = hasCamera ? availH * 0.55 : availH;
+    if (sh > maxScreenH) {
+      sh = maxScreenH;
+      sw = sh * screenAspect;
+    }
+    sw = Math.round(sw);
+    sh = Math.round(sh);
+
+    let cam = null;
+    if (hasCamera) {
+      let w = Math.round(W * (CAMERA_WIDTH_VERTICAL[opts.cameraSize] || CAMERA_WIDTH_VERTICAL.medium));
+      let h = opts.cameraShape === 'portrait' ? Math.round(w * 5 / 4) : w;
+      // Room for the name tag that straddles the bottom edge.
+      const room = availH - sh - gap - Math.round(W * 0.04);
+      if (h > room) {
+        w = Math.round(w * room / h);
+        h = room;
+      }
+      cam = { x: Math.round((W - w) / 2), y: 0, w, h };
+    }
+
+    const total = sh + (cam ? gap + cam.h : 0);
+    const y0 = Math.round((H - total) / 2);
+    const screen = { x: Math.round((W - sw) / 2), y: y0, w: sw, h: sh };
+    if (cam) {
+      if (opts.cameraSide === 'left') {
+        cam.y = y0;
+        screen.y = y0 + cam.h + gap;
+      } else {
+        cam.y = y0 + sh + gap;
+      }
+    }
+    return { screen, cam };
+  }
+
+  function layoutLandscape(W, H, opts, screenAspect, hasCamera) {
     const pad = Math.round(H * 0.06);
     const gap = Math.round(H * 0.04);
     const availH = H - 2 * pad;
@@ -71,12 +133,12 @@ const PenguStudio = (() => {
     ctx.closePath();
   }
 
-  function camPath(ctx, cam, shape, H) {
+  function camPath(ctx, cam, shape, U) {
     if (shape === 'circle') {
       ctx.beginPath();
       ctx.arc(cam.x + cam.w / 2, cam.y + cam.h / 2, Math.min(cam.w, cam.h) / 2, 0, Math.PI * 2);
     } else {
-      roundRectPath(ctx, cam, Math.round(H * 0.03));
+      roundRectPath(ctx, cam, Math.round(U * 0.03));
     }
   }
 
@@ -100,15 +162,16 @@ const PenguStudio = (() => {
       g.fillRect(0, 0, W, H);
     }
 
+    const U = Math.min(W, H);
     g.save();
     g.shadowColor = 'rgba(0, 0, 0, 0.38)';
-    g.shadowBlur = H * 0.045;
-    g.shadowOffsetY = H * 0.014;
+    g.shadowBlur = U * 0.045;
+    g.shadowOffsetY = U * 0.014;
     g.fillStyle = '#000';
-    roundRectPath(g, L.screen, Math.round(H * 0.016));
+    roundRectPath(g, L.screen, Math.round(U * 0.016));
     g.fill();
     if (L.cam) {
-      camPath(g, L.cam, opts.cameraShape, H);
+      camPath(g, L.cam, opts.cameraShape, U);
       g.fill();
     }
     g.restore();
@@ -159,8 +222,8 @@ const PenguStudio = (() => {
     ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, r.x, r.y, r.w, r.h);
   }
 
-  function drawNameTag(ctx, cam, name, H) {
-    const fs = Math.round(H * 0.026);
+  function drawNameTag(ctx, cam, name, U) {
+    const fs = Math.round(U * 0.026);
     ctx.font = `600 ${fs}px Inter, system-ui, sans-serif`;
     const padX = fs * 0.8;
     const maxText = Math.max(fs * 2, cam.w * 1.1 - padX * 2);
@@ -205,10 +268,11 @@ const PenguStudio = (() => {
     }
 
     const L = layout(W, H, opts, aspect, !!src.camera);
+    const U = Math.min(W, H);
     ctx.drawImage(getStage(ctx, W, H, src.background, L, opts), 0, 0);
 
     ctx.save();
-    roundRectPath(ctx, L.screen, Math.round(H * 0.016));
+    roundRectPath(ctx, L.screen, Math.round(U * 0.016));
     ctx.clip();
     if (screenReady) {
       ctx.drawImage(screen, sx, sy, sw, sh, L.screen.x, L.screen.y, L.screen.w, L.screen.h);
@@ -223,7 +287,7 @@ const PenguStudio = (() => {
     if (L.cam) {
       const cam = src.camera;
       ctx.save();
-      camPath(ctx, L.cam, opts.cameraShape, H);
+      camPath(ctx, L.cam, opts.cameraShape, U);
       ctx.clip();
       ctx.fillStyle = '#1C1E2B';
       ctx.fillRect(L.cam.x, L.cam.y, L.cam.w, L.cam.h);
@@ -233,14 +297,14 @@ const PenguStudio = (() => {
       ctx.restore();
 
       ctx.save();
-      camPath(ctx, L.cam, opts.cameraShape, H);
-      ctx.lineWidth = Math.max(2, H * 0.004);
+      camPath(ctx, L.cam, opts.cameraShape, U);
+      ctx.lineWidth = Math.max(2, U * 0.004);
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
       ctx.stroke();
       ctx.restore();
 
       const name = (opts.name || '').trim();
-      if (name) drawNameTag(ctx, L.cam, name, H);
+      if (name) drawNameTag(ctx, L.cam, name, U);
     }
   }
 
