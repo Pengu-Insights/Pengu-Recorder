@@ -1392,3 +1392,16 @@ body {
   object-fit: contain;
   background: #000;
 }
+
+/* ============ Video source picker ============ */
+.source-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.source-row .btn { padding: 9px 14px; font-size: 13px; }
+#video-file-btn { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#video-file-note {
+  display: block;
+  margin-top: 6px;
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+}

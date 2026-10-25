@@ -206,6 +206,16 @@
                 </span>
               </label>
 
+              <div class="field" id="source-field">
+                <span>Screen source</span>
+                <div class="source-row">
+                  <input type="file" id="video-file" accept="video/*" hidden>
+                  <button type="button" id="video-file-btn" class="btn btn-outline">Comment over a video…</button>
+                  <button type="button" id="video-file-clear" class="btn btn-ghost hidden">Use my screen</button>
+                </div>
+                <small id="video-file-note">Pick a video and it plays inside the template while you talk over it, camera and all.</small>
+              </div>
+
               <label class="check-field" id="live-preview-field">
                 <input type="checkbox" id="live-preview" checked>
                 <span>

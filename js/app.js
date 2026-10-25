@@ -21,6 +21,7 @@ const AppState = {
   notesTipShown: false, // one-time "entire screen" caveat toast per session
   notesPipWin: null,    // Document Picture-in-Picture window holding the notes, when open
   barHidden: false,     // user hid the in-tab control bar (Alt+H) to keep it out of the video
+  videoFileName: '',    // name of the video being commented over, if any
   previewOn: true,      // live preview of the composed frame while recording
   previewWarned: false, // one-time feedback-loop warning per session
   cameraId: null,       // selected devices ('' / null = browser default)
@@ -271,6 +272,7 @@ async function enterSetup() {
   $('#notes-input').value = AppState.notes; // notes persist for the session
   $('#hifi-audio').checked = AppState.hiFiAudio;
   $('#live-preview').checked = AppState.previewOn;
+  renderVideoSource();
   $('#cb-preview').classList.toggle('active', AppState.previewOn);
   $('#cb-preview').setAttribute('aria-pressed', AppState.previewOn ? 'true' : 'false');
   await acquireForMode(AppState.setupMode);
@@ -299,7 +301,50 @@ function applySetupControls() {
     the Studio "just you" template. */
 function needsScreen(mode) {
   if (mode === 'camera') return false;
+  if (recorder.hasFileSource) return false;   // the file fills the screen slot
   return !(mode === 'studio' && AppState.studio.template === 'camera');
+}
+
+/* ---------------- commenting over an existing video ----------------
+   The screen slot takes a video file instead of a live capture, so a take you
+   already have can play inside the template while the camera and microphone
+   record your commentary over it. */
+
+async function pickVideoFile(file) {
+  if (!file) return;
+  try {
+    const info = await recorder.setVideoFile(file);
+    AppState.videoFileName = file.name;
+    toast(`Commenting over ${file.name}: ${info.width} x ${info.height}, ${fmtTime(info.duration)}.`, 'success');
+  } catch (err) {
+    recorder.clearVideoFile();
+    AppState.videoFileName = '';
+    toast('That file cannot be played in this browser. Try an MP4 or a WebM.', 'error');
+  }
+  renderVideoSource();
+  startStudioPreview();   // the preview has real frames to show now
+}
+
+function clearVideoFile() {
+  recorder.clearVideoFile();
+  AppState.videoFileName = '';
+  renderVideoSource();
+  startStudioPreview();
+}
+
+function renderVideoSource() {
+  const on = recorder.hasFileSource;
+  const name = AppState.videoFileName || recorder.fileName || 'chosen file';
+  $('#video-file-btn').textContent = on ? `Video: ${name}` : 'Comment over a video…';
+  $('#video-file-clear').classList.toggle('hidden', !on);
+  $('#video-file-note').textContent = on
+    ? 'Recording plays this video from the start and finishes when it ends. Pause stops both.'
+    : 'Pick a video and it plays inside the template while you talk over it, camera and all.';
+  if (on) {
+    $('#setup-hint').textContent = 'No screen sharing: the video is the screen. Your browser will still ask for camera and microphone.';
+  } else {
+    selectModeButton(AppState.setupMode);   // restores the mode's own hint
+  }
 }
 
 /* Show the controls that matter for the chosen template. */
@@ -506,6 +551,13 @@ function startStudioPreview() {
   const canvas = $('#studio-preview');
   const ctx = canvas.getContext('2d');
   const state = { raf: 0, video: null, background: null };
+  const fileVideo = recorder.fileVideo;
+  if (fileVideo) {
+    // Loop it quietly, so the preview is not a frozen first frame.
+    fileVideo.loop = true;
+    fileVideo.muted = true;
+    fileVideo.play().catch(() => {});
+  }
   if (recorder.cameraStream) {
     const v = document.createElement('video');
     v.muted = true;
@@ -520,10 +572,10 @@ function startStudioPreview() {
   const tick = () => {
     PenguStudio.draw(ctx, canvas.width, canvas.height, {
       background: state.background,
-      screen: null,
+      screen: fileVideo || null,
       camera: state.video,
       opts: AppState.studio,
-      placeholder: true,
+      placeholder: !fileVideo,
     });
     state.raf = requestAnimationFrame(tick);
   };
@@ -752,9 +804,12 @@ async function startRecording() {
       toast('No shared audio captured. Chrome records system sound only from a tab, or from the whole screen when you tick "Share system audio" (Windows). The microphone still records if it is on.');
     }
   }
-  if (!needsScreen(mode) && !recorder.cameraStream) {
+  if (!needsScreen(mode) && !recorder.hasFileSource && !recorder.cameraStream) {
     toast('No camera available — this recording needs a camera', 'error');
     return;
+  }
+  if (recorder.hasFileSource) {
+    recorder.fileVideo.loop = false;   // the take ends when the video does
   }
 
   stopMicMeter();
@@ -792,7 +847,9 @@ async function startRecording() {
 
   recorder.bubble.radius = PenguRecorder.RADII[$('#cam-size').value] || PenguRecorder.RADII.medium;
   recorder.onAutoStop = () => {
-    toast('Screen sharing ended — finishing your recording');
+    toast(recorder.hasFileSource
+      ? 'The video ended, finishing your recording'
+      : 'Screen sharing ended — finishing your recording');
     finishRecording();
   };
 
@@ -2239,6 +2296,12 @@ function initEvents() {
   $('#cb-finish').addEventListener('click', finishRecording);
   $('#cb-mute').addEventListener('click', toggleMute);
   $('#cb-hide').addEventListener('click', () => setBarHidden(true));
+  $('#video-file-btn').addEventListener('click', () => $('#video-file').click());
+  $('#video-file').addEventListener('change', (e) => {
+    pickVideoFile(e.target.files && e.target.files[0]);
+    e.target.value = '';   // picking the same file twice must still fire
+  });
+  $('#video-file-clear').addEventListener('click', clearVideoFile);
   $('#cb-preview').addEventListener('click', () => setPreviewOn(!AppState.previewOn));
   $('#preview-panel-close').addEventListener('click', () => setPreviewOn(false));
 

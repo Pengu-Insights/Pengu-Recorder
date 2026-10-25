@@ -61,6 +61,13 @@ class PenguRecorder {
     this.ctx = null;
     this.clock = null;             // Worker or interval id
     this.clockIsWorker = false;
+    /* A video file standing in for the shared screen: play a take you already
+       have and talk over it, camera and template included. */
+    this.fileVideo = null;
+    this.fileUrl = null;
+    this.fileName = '';
+    this.fileSource = null;        // MediaElementAudioSourceNode, built once per element
+
     this.screenVideo = null;       // hidden draw sources
     this.camVideo = null;
 
@@ -239,6 +246,50 @@ class PenguRecorder {
     return { camera: !!this.cameraStream, mic: !!this.micStream };
   }
 
+  /** True when the take is built over a video file instead of a live screen. */
+  get hasFileSource() {
+    return !!this.fileVideo;
+  }
+
+  /**
+   * Use `file` as the screen source. Resolves { width, height, duration }.
+   * The element is kept muted here: the setup preview should be silent, and
+   * the sound is routed through the audio graph once recording starts.
+   */
+  setVideoFile(file) {
+    this.clearVideoFile();
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.src = url;
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      const fail = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('this file cannot be played here'));
+      };
+      v.onerror = fail;
+      v.onloadedmetadata = () => {
+        if (!v.videoWidth) { fail(); return; }
+        this.fileVideo = v;
+        this.fileUrl = url;
+        this.fileName = file.name || '';
+        resolve({ width: v.videoWidth, height: v.videoHeight, duration: v.duration });
+      };
+    });
+  }
+
+  clearVideoFile() {
+    if (this.fileSource) { try { this.fileSource.disconnect(); } catch { /* already gone */ } }
+    this.fileSource = null;
+    if (this.fileVideo) { this.fileVideo.pause(); this.fileVideo.removeAttribute('src'); }
+    if (this.fileUrl) URL.revokeObjectURL(this.fileUrl);
+    this.fileVideo = null;
+    this.fileUrl = null;
+    this.fileName = '';
+  }
+
   /* ---------- screen acquisition (must be called from a user gesture) ---------- */
   async acquireScreen() {
     // Capture size follows the setup-screen quality picker; 'auto' lets the
@@ -290,6 +341,7 @@ class PenguRecorder {
      re-encoding through the canvas, which the uncropped screen path
      deliberately avoids. */
   get usesCanvas() {
+    if (this.hasFileSource) return true;   // a file always has to be composited
     if (this.mode === 'studio') return true;
     if (this.mode === 'screen-cam' && this.cameraStream) return true;
     return this.mode !== 'camera' && this.hasCrop;
@@ -372,6 +424,14 @@ class PenguRecorder {
     this.elapsedBeforePause = 0;
     this.startedAt = Date.now();
     this.state = 'recording';
+
+    if (this.hasFileSource) {
+      this.fileVideo.currentTime = 0;
+      this.fileVideo.onended = () => {
+        if (this.state !== 'idle' && typeof this.onAutoStop === 'function') this.onAutoStop();
+      };
+      this.fileVideo.play().catch(() => {});
+    }
 
     if (this.usesCanvas || this.extras.some((o) => o.ctx)) this._startClock();
     this.flushTimer = setInterval(() => {
@@ -593,9 +653,16 @@ class PenguRecorder {
   _setupCanvas() {
     this.canvas = document.createElement('canvas'); // intentionally never appended: hidden
 
-    // No screen in the Studio "just you" template, only the camera.
-    this.screenVideo = this.screenStream ? this._makeSourceVideo(this.screenStream) : null;
-    const s = this._trackSettings(this.screenStream);
+    /* The screen slot is fed by the live capture, by a video file, or by
+       nothing at all (the Studio "just you" template). */
+    if (this.hasFileSource) {
+      this.screenVideo = this.fileVideo;
+    } else {
+      this.screenVideo = this.screenStream ? this._makeSourceVideo(this.screenStream) : null;
+    }
+    const s = this.hasFileSource
+      ? { width: this.fileVideo.videoWidth, height: this.fileVideo.videoHeight }
+      : this._trackSettings(this.screenStream);
     const scale = this.cropScale;
     // Even dimensions: odd ones make some encoders pad or refuse the frame.
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
@@ -633,7 +700,8 @@ class PenguRecorder {
   _setupAudio() {
     const hasMic = !!(this.micStream && this.micStream.getAudioTracks().length);
     const hasSys = !!(this.screenStream && this.screenStream.getAudioTracks().length);
-    if (!hasMic && !hasSys) { this.audioDest = null; return; }
+    const hasFile = this.hasFileSource;
+    if (!hasMic && !hasSys && !hasFile) { this.audioDest = null; return; }
 
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     this.audioCtx.resume().catch(() => {});
@@ -648,6 +716,15 @@ class PenguRecorder {
     if (hasSys) {
       const src = this.audioCtx.createMediaStreamSource(this.screenStream);
       src.connect(this.audioDest);
+    }
+    if (hasFile) {
+      /* Routing an element through the graph takes its sound off the speakers,
+         so connect it to both: the recording and the room. An element can only
+         ever have one source node, hence the cache. */
+      this.fileVideo.muted = false;
+      this.fileSource = this.fileSource || this.audioCtx.createMediaElementSource(this.fileVideo);
+      this.fileSource.connect(this.audioDest);
+      this.fileSource.connect(this.audioCtx.destination);
     }
   }
 
@@ -755,6 +832,7 @@ class PenguRecorder {
       if (mr && mr.state === 'recording') mr.pause();
     }
     this._stopClock(); // nothing is being captured; stop burning CPU
+    if (this.hasFileSource) this.fileVideo.pause();
     this.elapsedBeforePause += Date.now() - this.startedAt;
     this.state = 'paused';
   }
@@ -765,6 +843,7 @@ class PenguRecorder {
       if (mr && mr.state === 'paused') mr.resume();
     }
     if (this.usesCanvas || this.extras.some((o) => o.ctx)) this._startClock();
+    if (this.hasFileSource) this.fileVideo.play().catch(() => {});
     this.startedAt = Date.now();
     this.state = 'recording';
   }
@@ -839,6 +918,12 @@ class PenguRecorder {
       durationMs: 0,
     }).catch(() => {});
 
+    // A fresh take means the file plays again from the top.
+    if (this.hasFileSource) {
+      this.fileVideo.currentTime = 0;
+      this.fileVideo.play().catch(() => {});
+    }
+
     const vw = this.usesCanvas ? this.canvas.width : undefined;
     const vh = this.usesCanvas ? this.canvas.height : undefined;
     this._createRecorder(vw || 1920, vh || 1080);
@@ -889,6 +974,7 @@ class PenguRecorder {
   /* ---------- cleanup ---------- */
   _teardown() {
     this._stopClock();
+    if (this.fileVideo) { this.fileVideo.pause(); this.fileVideo.onended = null; }
     if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
     this._stopTracks();
     if (this.audioCtx) { this.audioCtx.close().catch(() => {}); this.audioCtx = null; }
