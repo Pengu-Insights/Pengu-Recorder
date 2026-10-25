@@ -1354,3 +1354,41 @@ body {
 @media (max-width: 900px) {
   .extra-outputs { grid-template-columns: 1fr; }
 }
+
+/* ============ In-tab live preview (fallback without Picture-in-Picture) ============ */
+#preview-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 96px;
+  z-index: 950;
+  width: 320px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #14132b;
+  box-shadow: 0 12px 32px rgba(20, 19, 43, 0.45);
+}
+
+#preview-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  color: #fff;
+}
+
+.preview-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+#preview-panel-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+}

@@ -21,6 +21,8 @@ const AppState = {
   notesTipShown: false, // one-time "entire screen" caveat toast per session
   notesPipWin: null,    // Document Picture-in-Picture window holding the notes, when open
   barHidden: false,     // user hid the in-tab control bar (Alt+H) to keep it out of the video
+  previewOn: true,      // live preview of the composed frame while recording
+  previewWarned: false, // one-time feedback-loop warning per session
   cameraId: null,       // selected devices ('' / null = browser default)
   micId: null,
   hiFiAudio: false,
@@ -120,6 +122,7 @@ function loadPrefs() {
     saved = {};
   }
   if (typeof saved.quality === 'string') AppState.quality = saved.quality;
+  if (typeof saved.previewOn === 'boolean') AppState.previewOn = saved.previewOn;
   if (saved.studio && typeof saved.studio === 'object') {
     for (const k of STUDIO_KEYS) {
       if (typeof saved.studio[k] === 'string') AppState.studio[k] = saved.studio[k];
@@ -140,6 +143,7 @@ function savePrefs() {
     localStorage.setItem(PREFS_KEY, JSON.stringify({
       format: AppState.format,
       quality: AppState.quality,
+      previewOn: AppState.previewOn,
       studio: AppState.studio,
     }));
   } catch { /* storage unavailable: keep the choice for this visit only */ }
@@ -266,6 +270,9 @@ async function enterSetup() {
   selectModeButton(AppState.setupMode);
   $('#notes-input').value = AppState.notes; // notes persist for the session
   $('#hifi-audio').checked = AppState.hiFiAudio;
+  $('#live-preview').checked = AppState.previewOn;
+  $('#cb-preview').classList.toggle('active', AppState.previewOn);
+  $('#cb-preview').setAttribute('aria-pressed', AppState.previewOn ? 'true' : 'false');
   await acquireForMode(AppState.setupMode);
 }
 
@@ -848,6 +855,10 @@ function showRecordingChrome(on) {
   }
   if (!on) {
     stopTimerUi();
+    $('#preview-panel').classList.add('hidden');
+    $('#preview-panel-video').srcObject = null;
+    if (AppState.pipPreview) AppState.pipPreview.srcObject = null;
+    AppState.previewWarned = false;
     $('#control-bar').classList.remove('paused');
     closeNotesPip();
     $('#notes-panel').classList.add('hidden');
@@ -864,6 +875,7 @@ function showRecordingChrome(on) {
       // Reopen the notes window if it was open during a previous take.
       setNotesOpen(true);
     }
+    attachPreviewStream();
   }
 }
 
@@ -1079,7 +1091,10 @@ async function openControlPip() {
   if (!('documentPictureInPicture' in window)) return false;
   try {
     if (AppState.ctrlPipWin && !AppState.ctrlPipWin.closed) return true;
-    const pip = await window.documentPictureInPicture.requestWindow({ width: 420, height: 72 });
+    const pip = await window.documentPictureInPicture.requestWindow({
+      width: 420,
+      height: AppState.previewOn ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY,
+    });
     AppState.ctrlPipWin = pip;
     pip.document.title = 'Recording — Pengu Recorder';
 
@@ -1099,11 +1114,25 @@ async function openControlPip() {
     }
     const extra = pip.document.createElement('style');
     extra.textContent = `
-      body { margin: 0; height: 100vh; display: flex; align-items: center;
-             justify-content: center; background: #14132b; overflow: hidden; }
+      body { margin: 0; height: 100vh; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 8px;
+             background: #14132b; overflow: hidden; padding: 8px; }
       .control-bar--pip { position: static !important; transform: none !important;
-             box-shadow: none !important; }`;
+             box-shadow: none !important; flex: none; }
+      .pip-preview { width: 100%; flex: 1 1 auto; min-height: 0; object-fit: contain;
+             background: #000; border-radius: 10px; display: block; }
+      .pip-preview.hidden { display: none; }`;
     pip.document.head.appendChild(extra);
+
+    /* The preview is fed by the recorded stream itself, so it shows exactly
+       the frames being encoded: backdrop, template, crop and camera included. */
+    const preview = pip.document.createElement('video');
+    preview.className = 'pip-preview' + (AppState.previewOn ? '' : ' hidden');
+    preview.autoplay = true;
+    preview.muted = true;          // never play the microphone back at the user
+    preview.playsInline = true;
+    pip.document.body.appendChild(preview);
+    AppState.pipPreview = preview;
 
     const bar = $('#control-bar').cloneNode(true);
     bar.removeAttribute('id');
@@ -1128,10 +1157,13 @@ async function openControlPip() {
     wire('#cb-finish', finishRecording);
     wire('#cb-mute', toggleMute);
     wire('#cb-notes', () => setNotesOpen(!AppState.notesOpen));
+    wire('#cb-preview', () => setPreviewOn(!AppState.previewOn));
 
     pip.addEventListener('pagehide', () => {
       if (AppState.ctrlPipWin === pip) AppState.ctrlPipWin = null;
+      AppState.pipPreview = null;
       updateBarVisibility(); // controls must not vanish with the window
+      if (recorder.state !== 'idle') attachPreviewStream();  // fall back in tab
     });
     syncControlPip();
     updateBarVisibility();
@@ -1141,6 +1173,83 @@ async function openControlPip() {
     AppState.ctrlPipWin = null;
     return false;
   }
+}
+
+/* ---------------- live preview ----------------
+   A monitor for the take while it runs. It plays `recorder.recordedStream`,
+   which is the stream going into the encoder, so what it shows is what the
+   file will contain.
+
+   It lives in the floating Picture-in-Picture window on purpose. A preview
+   drawn inside the page would be captured by a full-screen share and fed back
+   into itself, which is the classic video tunnel. The in-tab panel is only a
+   fallback, and it says so. */
+
+const PIP_HEIGHT_WITH_PREVIEW = 330;
+const PIP_HEIGHT_BAR_ONLY = 72;
+
+/** Point whichever preview surface exists at the stream being recorded. */
+function attachPreviewStream() {
+  const stream = recorder.recordedStream;
+  const live = recorder.state !== 'idle' && AppState.previewOn && !!stream;
+  const pipVideo = AppState.pipPreview;
+  const panel = $('#preview-panel');
+  const panelVideo = $('#preview-panel-video');
+
+  const wanted = live ? stream : null;
+
+  if (pipVideo) {
+    // The floating window is up: show it there and leave the page clean.
+    pipVideo.classList.toggle('hidden', !live);
+    if (pipVideo.srcObject !== wanted) pipVideo.srcObject = wanted;
+    if (live) pipVideo.play().catch(() => {});
+    panel.classList.add('hidden');
+    panelVideo.srcObject = null;
+    return;
+  }
+
+  panel.classList.toggle('hidden', !live);
+  if (panelVideo.srcObject !== wanted) panelVideo.srcObject = wanted;
+  if (live) {
+    panelVideo.play().catch(() => {});
+    warnAboutPreviewInShot();
+  }
+}
+
+/* An on-screen preview inside the captured surface records itself. Say it once. */
+function warnAboutPreviewInShot() {
+  if (AppState.previewWarned) return;
+  const surface = recorder.getBubbleSpace().kind;
+  if (surface === 'browser') return;  // tab share: the page is not in the shot
+  AppState.previewWarned = true;
+  toast('The preview is on screen inside what you are sharing, so it will record itself. Move it off the shared screen, or press Alt+V to hide it.');
+}
+
+function setPreviewOn(on) {
+  AppState.previewOn = on;
+  const pip = AppState.ctrlPipWin;
+  if (pip && !pip.closed) {
+    // Give the window back its space when the preview is put away.
+    try { pip.resizeTo(pip.outerWidth || 420, on ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY); } catch { /* the user can resize it */ }
+  }
+  attachPreviewStream();
+  for (const btn of previewButtons()) {
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  const box = $('#live-preview');
+  if (box) box.checked = on;
+  savePrefs();
+}
+
+/** The toggle exists twice: in the page and in the floating copy of the bar. */
+function previewButtons() {
+  const buttons = [$('#cb-preview')];
+  const pip = AppState.ctrlPipWin;
+  if (pip && !pip.closed) {
+    buttons.push(pip.document.querySelector('.control-bar--pip #cb-preview'));
+  }
+  return buttons.filter(Boolean);
 }
 
 function closeControlPip() {
@@ -2057,6 +2166,7 @@ function initEvents() {
   $('#crop-step').addEventListener('change', (e) => {
     if (!e.target.checked) recorder.crop = { top: 0, right: 0, bottom: 0, left: 0 };
   });
+  $('#live-preview').addEventListener('change', (e) => setPreviewOn(e.target.checked));
   $('#hifi-audio').addEventListener('change', async (e) => {
     AppState.hiFiAudio = e.target.checked;
     await acquireForMode(AppState.setupMode);
@@ -2129,6 +2239,8 @@ function initEvents() {
   $('#cb-finish').addEventListener('click', finishRecording);
   $('#cb-mute').addEventListener('click', toggleMute);
   $('#cb-hide').addEventListener('click', () => setBarHidden(true));
+  $('#cb-preview').addEventListener('click', () => setPreviewOn(!AppState.previewOn));
+  $('#preview-panel-close').addEventListener('click', () => setPreviewOn(false));
 
   // Keyboard shortcuts, ignored while typing.
   document.addEventListener('keydown', (e) => {
@@ -2141,6 +2253,7 @@ function initEvents() {
     else if (key === 'm') { e.preventDefault(); toggleMute(); }
     else if (key === 'n') { e.preventDefault(); setNotesOpen(!AppState.notesOpen); }
     else if (key === 'h') { e.preventDefault(); setBarHidden(!AppState.barHidden); }
+    else if (key === 'v') { e.preventDefault(); setPreviewOn(!AppState.previewOn); }
   });
 
   // Closing the tab mid-take: warn, and rely on the flushed chunks otherwise.
