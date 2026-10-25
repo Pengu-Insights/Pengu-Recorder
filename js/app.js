@@ -21,10 +21,17 @@ const AppState = {
   notesTipShown: false, // one-time "entire screen" caveat toast per session
   notesPipWin: null,    // Document Picture-in-Picture window holding the notes, when open
   barHidden: false,     // user hid the in-tab control bar (Alt+H) to keep it out of the video
+  previewOn: true,      // live preview of the composed frame while recording
+  previewWarned: false, // one-time feedback-loop warning per session
   cameraId: null,       // selected devices ('' / null = browser default)
   micId: null,
   hiFiAudio: false,
   recovery: null,       // pending recovery session meta, if any
+  format: 'webm',       // 'mp4' | 'webm', settled by loadPrefs()
+  quality: 'auto',
+  studio: { ...PenguStudio.DEFAULTS, backgroundId: PenguBackgrounds.DEFAULT_ID },
+  studioPreview: null,  // { raf, video, background } while the setup preview runs
+  exportAbort: null,    // AbortController of the export in progress
 };
 
 /* ---------------- helpers ---------------- */
@@ -76,6 +83,72 @@ function withTimeout(promise, ms, fallback = null) {
   ]);
 }
 
+/* ---------------- preferences ----------------
+   Per-browser conveniences only: format, quality and the Studio look.
+   Storage throws in some private windows and when site data is blocked;
+   the app then starts from the defaults every time, which is fine. */
+
+const PREFS_KEY = 'pengu-recorder:prefs';
+const STUDIO_KEYS = ['template', 'aspect', 'cameraSide', 'cameraCorner', 'cameraShape', 'cameraSize', 'name', 'backgroundId'];
+
+const STUDIO_TEMPLATES = [
+  { id: 'side', label: 'Side by side' },
+  { id: 'corner', label: 'Full screen, camera in a corner' },
+  { id: 'framed-corner', label: 'Framed screen, camera in a corner' },
+  { id: 'split', label: 'Split screen: what you show, then you' },
+  { id: 'camera', label: 'Just you, for intros and outros' },
+];
+
+/* Versions that can be recorded alongside the main Studio take. `opts`
+   override the main Studio settings; background, name and camera size carry over. */
+const EXTRA_OUTPUTS = [
+  { id: 'reel', label: 'Reel 9:16', title: 'Instagram Reel', detail: 'Split screen, you below',
+    kind: 'studio', opts: { aspect: 'reel', template: 'split', cameraSide: 'right' } },
+  { id: 'short', label: 'Short 9:16', title: 'YouTube Short', detail: 'Camera above the screen',
+    kind: 'studio', opts: { aspect: 'vertical', template: 'side', cameraSide: 'left' } },
+  { id: 'youtube', label: 'YouTube 16:9', title: 'YouTube video', detail: 'Screen and camera side by side',
+    kind: 'studio', opts: { aspect: 'landscape', template: 'side', cameraSide: 'right' } },
+  { id: 'screen', label: 'Screen only', title: 'Whole screen', detail: 'Just what you share, no camera', kind: 'screen' },
+  { id: 'camera', label: 'Camera only', title: 'All of you', detail: 'The full camera frame, as your camera films it', kind: 'camera' },
+];
+
+const ASPECT_LABELS = { landscape: 'YouTube 16:9', vertical: 'Short 9:16', reel: 'Reel 9:16' };
+
+function loadPrefs() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') || {};
+  } catch {
+    saved = {};
+  }
+  if (typeof saved.quality === 'string') AppState.quality = saved.quality;
+  if (typeof saved.previewOn === 'boolean') AppState.previewOn = saved.previewOn;
+  if (saved.studio && typeof saved.studio === 'object') {
+    for (const k of STUDIO_KEYS) {
+      if (typeof saved.studio[k] === 'string') AppState.studio[k] = saved.studio[k];
+    }
+  }
+  if (!PenguStudio.TEMPLATES.includes(AppState.studio.template)) AppState.studio.template = 'side';
+  const extras = saved.studio && saved.studio.extras;
+  AppState.studio.extras = Array.isArray(extras)
+    ? extras.filter((id) => EXTRA_OUTPUTS.some((o) => o.id === id))
+    : [];
+  const wanted = saved.format === 'webm' || saved.format === 'mp4' ? saved.format : 'mp4';
+  AppState.format = PenguRecorder.formatSupported(wanted) ? wanted
+    : (PenguRecorder.formatSupported('mp4') ? 'mp4' : 'webm');
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      format: AppState.format,
+      quality: AppState.quality,
+      previewOn: AppState.previewOn,
+      studio: AppState.studio,
+    }));
+  } catch { /* storage unavailable: keep the choice for this visit only */ }
+}
+
 /* ---------------- router ---------------- */
 
 function parseRoute() {
@@ -107,6 +180,7 @@ async function router() {
   // Leaving the setup screen without ever recording -> release preview streams.
   if (AppState.lastHash.startsWith('#/record') && route.name !== 'record' && recorder.state === 'idle') {
     stopMicMeter();
+    stopStudioPreview();
     recorder.cleanup();
   }
 
@@ -163,7 +237,9 @@ async function renderLibrary() {
     const meta = document.createElement('p');
     meta.className = 'card-meta';
     const views = v.views ?? 0; // records saved before the real counter may lack the field
-    meta.textContent = `${fmtDate(v.createdAt)} · ${views} view${views === 1 ? '' : 's'}`;
+    // Older records predate the field; they were always WebM.
+    const format = PenguRecorder.formatOf(v.mimeType).toUpperCase();
+    meta.textContent = `${fmtDate(v.createdAt)} · ${views} view${views === 1 ? '' : 's'} · ${format}`;
 
     card.append(thumb, title, meta);
     card.setAttribute('aria-label', `${v.title}, ${meta.textContent}`);
@@ -190,10 +266,178 @@ async function renderStorageNote() {
 /* ---------------- recording setup ---------------- */
 
 async function enterSetup() {
+  applySetupControls();
   selectModeButton(AppState.setupMode);
   $('#notes-input').value = AppState.notes; // notes persist for the session
   $('#hifi-audio').checked = AppState.hiFiAudio;
+  $('#live-preview').checked = AppState.previewOn;
+  $('#cb-preview').classList.toggle('active', AppState.previewOn);
+  $('#cb-preview').setAttribute('aria-pressed', AppState.previewOn ? 'true' : 'false');
   await acquireForMode(AppState.setupMode);
+}
+
+/** Put the saved choices back into the setup form. */
+function applySetupControls() {
+  const mp4 = $('#format option[value="mp4"]');
+  if (!PenguRecorder.formatSupported('mp4')) {
+    mp4.disabled = true;
+    mp4.textContent = 'MP4 (needs Chrome or Edge 126+)';
+  }
+  $('#format').value = AppState.format;
+  $('#quality').value = AppState.quality;
+  if (!$('#quality').value) $('#quality').value = 'auto';
+  $('#cam-size').value = AppState.studio.cameraSize;
+  $('#studio-side').value = AppState.studio.cameraSide;
+  $('#studio-shape').value = AppState.studio.cameraShape;
+  $('#studio-name').value = AppState.studio.name;
+  $('#studio-corner').value = AppState.studio.cameraCorner;
+  applyStudioAspect();
+  applyStudioTemplate();
+}
+
+/** True when the take needs a screen share: every mode but camera only and
+    the Studio "just you" template. */
+function needsScreen(mode) {
+  if (mode === 'camera') return false;
+  return !(mode === 'studio' && AppState.studio.template === 'camera');
+}
+
+/* Show the controls that matter for the chosen template. */
+function applyStudioTemplate() {
+  const t = AppState.studio.template;
+  const studio = AppState.setupMode === 'studio';
+  $('#studio-side-field').classList.toggle('hidden', t !== 'side' && t !== 'split');
+  // Split panels are always rounded rectangles, so the shape picker does not apply.
+  $('#studio-shape').closest('.field').classList.toggle('hidden', t === 'split');
+  $('#studio-corner-field').classList.toggle('hidden', t !== 'corner' && t !== 'framed-corner');
+  $('#crop-field').classList.toggle('hidden', !needsScreen(AppState.setupMode));
+  document.querySelectorAll('#template-picker .template-tile').forEach((b) => {
+    b.setAttribute('aria-checked', b.dataset.template === t ? 'true' : 'false');
+  });
+  renderExtraOutputs();
+  if (studio) {
+    $('#setup-hint').textContent = t === 'camera'
+      ? 'Your browser will ask for camera and microphone access. No screen is shared in this layout.'
+      : 'Your browser will ask which screen, window, or tab to share. It goes in the layout, with your camera.';
+  }
+}
+
+/* ---------------- extra versions ---------------- */
+
+/** Why an extra cannot be recorded with the current setup, or '' when it can. */
+function extraUnavailable(o) {
+  const s = AppState.studio;
+  if (o.kind === 'studio' && o.opts.aspect === s.aspect && o.opts.template === s.template) {
+    return 'Same as your main layout';
+  }
+  if (o.kind === 'screen' && !needsScreen('studio')) return 'No screen in the "just you" layout';
+  if (o.kind === 'studio' && s.template === 'camera') return 'Needs a screen share';
+  return '';
+}
+
+function renderExtraOutputs() {
+  const box = $('#extra-outputs');
+  box.innerHTML = '';
+  for (const o of EXTRA_OUTPUTS) {
+    const why = extraUnavailable(o);
+    const label = document.createElement('label');
+    label.className = 'check-field extra-output';
+    label.classList.toggle('unavailable', !!why);
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !why && AppState.studio.extras.includes(o.id);
+    input.disabled = !!why;
+    input.addEventListener('change', () => {
+      const set = new Set(AppState.studio.extras);
+      if (input.checked) set.add(o.id); else set.delete(o.id);
+      AppState.studio.extras = EXTRA_OUTPUTS.map((x) => x.id).filter((id) => set.has(id));
+      savePrefs();
+    });
+    const text = document.createElement('span');
+    text.textContent = o.title;
+    const small = document.createElement('small');
+    small.textContent = why || o.detail;
+    text.appendChild(small);
+    label.append(input, text);
+    box.appendChild(label);
+  }
+}
+
+/** Specs for the recorder: the ticked extras that make sense for this take. */
+function extraSpecsFor(mode) {
+  if (mode !== 'studio') return [];
+  return EXTRA_OUTPUTS
+    .filter((o) => AppState.studio.extras.includes(o.id) && !extraUnavailable(o))
+    .map((o) => ({
+      id: o.id,
+      label: o.label,
+      kind: o.kind,
+      opts: o.kind === 'studio' ? { ...AppState.studio, ...o.opts } : null,
+    }));
+}
+
+function mainVersionLabel(mode) {
+  if (mode === 'studio') return ASPECT_LABELS[AppState.studio.aspect] || 'Studio';
+  return { 'screen-cam': 'Screen and camera', screen: 'Screen', camera: 'Camera' }[mode] || 'Video';
+}
+
+/* Thumbnails of every template, drawn by the real compositor with the
+   current background and camera options, so each tile shows what you get. */
+let templateThumbsJob = 0;
+async function renderTemplatePicker() {
+  const job = ++templateThumbsJob;
+  const picker = $('#template-picker');
+  const vertical = AppState.studio.aspect !== 'landscape';
+  const [w, h] = vertical ? [108, 192] : [192, 108];
+  const background = await PenguBackgrounds.render(AppState.studio.backgroundId, w, h).catch(() => null);
+  if (job !== templateThumbsJob) return; // a newer render superseded this one
+
+  picker.classList.toggle('vertical', vertical);
+  picker.innerHTML = '';
+  for (const t of STUDIO_TEMPLATES) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'template-tile';
+    tile.dataset.template = t.id;
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-checked', t.id === AppState.studio.template ? 'true' : 'false');
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    PenguStudio.draw(canvas.getContext('2d'), w, h, {
+      background, screen: null, camera: null, placeholder: true,
+      opts: { ...AppState.studio, template: t.id, name: '' },
+    });
+    const label = document.createElement('span');
+    label.textContent = t.label;
+    tile.append(canvas, label);
+    tile.addEventListener('click', () => {
+      AppState.studio.template = t.id;
+      savePrefs();
+      applyStudioTemplate();
+    });
+    picker.appendChild(tile);
+  }
+}
+
+/* YouTube (16:9) or Shorts (9:16): the preview canvas takes the shape of
+   the video, and "left/right of the screen" becomes "above/below". */
+function applyStudioAspect() {
+  const vertical = AppState.studio.aspect !== 'landscape';
+  document.querySelectorAll('.aspect-btn').forEach((b) => {
+    b.setAttribute('aria-checked', b.dataset.aspect === AppState.studio.aspect ? 'true' : 'false');
+  });
+  const canvas = $('#studio-preview');
+  const [w, h] = vertical ? [540, 960] : [960, 540];
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  canvas.classList.toggle('vertical', vertical);
+  $('#studio-side option[value="left"]').textContent = vertical ? 'Above the screen' : 'Left of the screen';
+  $('#studio-side option[value="right"]').textContent = vertical ? 'Below the screen' : 'Right of the screen';
+  refreshPreviewBackground();
+  renderTemplatePicker();
 }
 
 function selectModeButton(mode) {
@@ -204,13 +448,23 @@ function selectModeButton(mode) {
   });
   $('#cam-size-field').classList.toggle('hidden', mode === 'screen');
   $('#cam-device-field').classList.toggle('hidden', mode === 'screen');
+
+  const studio = mode === 'studio';
+  $('#studio-panel').classList.toggle('hidden', !studio);
+  $('#studio-preview').classList.toggle('hidden', !studio);
+  $('#cam-preview-wrap').classList.toggle('hidden', studio);
+  $('#cam-size-label').textContent = studio ? 'Camera size' : 'Camera bubble size';
+  if (studio) renderBackgroundGallery();
+
   $('#setup-hint').textContent = mode === 'camera'
     ? 'Your browser will ask for camera and microphone access.'
     : 'Your browser will ask which screen, window, or tab to share.';
+  applyStudioTemplate();
 }
 
 async function acquireForMode(mode) {
   stopMicMeter();
+  stopStudioPreview();
   recorder.cleanup();
 
   const { camera, mic } = await recorder.acquireSetupStreams(mode, {
@@ -238,8 +492,148 @@ async function acquireForMode(mode) {
   $('#mic-label').textContent = mic ? 'Mic' : 'No mic';
 
   if (mic) startMicMeter(recorder.micStream);
+  if (mode === 'studio' && AppState.setupMode === 'studio') startStudioPreview();
 
   await populateDeviceSelects();
+}
+
+/* ---------------- Studio setup: live preview + background gallery ---------------- */
+
+/* Runs the real compositor (studio.js) on a small canvas, with a stand-in
+   where the screen will go, so what the user arranges is what gets recorded. */
+function startStudioPreview() {
+  stopStudioPreview();
+  const canvas = $('#studio-preview');
+  const ctx = canvas.getContext('2d');
+  const state = { raf: 0, video: null, background: null };
+  if (recorder.cameraStream) {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.srcObject = recorder.cameraStream;
+    v.play().catch(() => {});
+    state.video = v;
+  }
+  AppState.studioPreview = state;
+  refreshPreviewBackground();
+
+  const tick = () => {
+    PenguStudio.draw(ctx, canvas.width, canvas.height, {
+      background: state.background,
+      screen: null,
+      camera: state.video,
+      opts: AppState.studio,
+      placeholder: true,
+    });
+    state.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopStudioPreview() {
+  const state = AppState.studioPreview;
+  if (!state) return;
+  cancelAnimationFrame(state.raf);
+  if (state.video) state.video.srcObject = null;
+  AppState.studioPreview = null;
+}
+
+async function refreshPreviewBackground() {
+  const state = AppState.studioPreview;
+  if (!state) return;
+  const canvas = $('#studio-preview');
+  const bg = await PenguBackgrounds
+    .render(AppState.studio.backgroundId, canvas.width, canvas.height)
+    .catch(() => null);
+  if (AppState.studioPreview === state) state.background = bg;
+}
+
+async function renderBackgroundGallery() {
+  const gallery = $('#bg-gallery');
+  const items = await PenguBackgrounds.list();
+  if (!items.some((i) => i.id === AppState.studio.backgroundId)) {
+    AppState.studio.backgroundId = PenguBackgrounds.DEFAULT_ID;
+    refreshPreviewBackground();
+  }
+
+  gallery.innerHTML = '';
+  const add = document.createElement('label');
+  add.className = 'bg-tile bg-add';
+  add.title = 'Add your own image';
+  add.innerHTML = '<input type="file" accept="image/*" class="sr-only-input" aria-label="Add your own background image">'
+    + '<span class="bg-add-plus" aria-hidden="true">+</span><span>Add image</span>';
+  add.querySelector('input').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) addBackgroundFile(file);
+  });
+  gallery.appendChild(add);
+
+  for (const item of items) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bg-tile-wrap';
+
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'bg-tile';
+    tile.dataset.id = item.id;
+    tile.title = item.label;
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-label', item.label);
+    tile.setAttribute('aria-checked', item.id === AppState.studio.backgroundId ? 'true' : 'false');
+    const img = document.createElement('img');
+    img.src = item.thumb;
+    img.alt = '';
+    tile.appendChild(img);
+    tile.addEventListener('click', () => selectBackground(item.id));
+    wrap.appendChild(tile);
+
+    if (item.removable) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'bg-remove';
+      del.textContent = '×';
+      del.setAttribute('aria-label', `Remove ${item.label}`);
+      del.addEventListener('click', () => removeBackgroundImage(item.id));
+      wrap.appendChild(del);
+    }
+    gallery.appendChild(wrap);
+  }
+}
+
+function selectBackground(id) {
+  AppState.studio.backgroundId = id;
+  savePrefs();
+  document.querySelectorAll('#bg-gallery .bg-tile[data-id]').forEach((t) => {
+    t.setAttribute('aria-checked', t.dataset.id === id ? 'true' : 'false');
+  });
+  refreshPreviewBackground();
+  renderTemplatePicker();
+}
+
+async function addBackgroundFile(file) {
+  try {
+    const id = await PenguBackgrounds.add(file);
+    AppState.studio.backgroundId = id;
+    savePrefs();
+    await renderBackgroundGallery();
+    refreshPreviewBackground();
+    renderTemplatePicker();
+    toast('Background added', 'success');
+  } catch (err) {
+    toast(err && err.message === 'too-large'
+      ? 'That image is over 25 MB. Try a smaller one.'
+      : 'Could not read that image. Try a JPG, PNG or WebP.', 'error');
+  }
+}
+
+async function removeBackgroundImage(id) {
+  await PenguBackgrounds.remove(id).catch(() => {});
+  if (AppState.studio.backgroundId === id) AppState.studio.backgroundId = PenguBackgrounds.DEFAULT_ID;
+  savePrefs();
+  await renderBackgroundGallery();
+  refreshPreviewBackground();
+  renderTemplatePicker();
+  toast('Background removed');
 }
 
 /* Device pickers. Labels only exist once permission has been granted, which is
@@ -338,10 +732,13 @@ function runCountdown() {
 
 async function startRecording() {
   const mode = AppState.setupMode;
+  recorder.quality = AppState.quality;
+  recorder.format = AppState.format;
+  recorder.studio = { ...AppState.studio };
+  recorder.extraSpecs = extraSpecsFor(mode);
 
-  if (mode !== 'camera') {
+  if (needsScreen(mode)) {
     try {
-      recorder.quality = $('#quality') ? $('#quality').value : 'auto';
       await recorder.acquireScreen();
     } catch (err) {
       toast('Screen sharing was cancelled — pick a screen to start', 'error');
@@ -355,20 +752,22 @@ async function startRecording() {
       toast('No shared audio captured. Chrome records system sound only from a tab, or from the whole screen when you tick "Share system audio" (Windows). The microphone still records if it is on.');
     }
   }
-  if (mode === 'camera' && !recorder.cameraStream) {
-    toast('No camera available — cannot start a camera-only recording', 'error');
+  if (!needsScreen(mode) && !recorder.cameraStream) {
+    toast('No camera available — this recording needs a camera', 'error');
     return;
   }
 
   stopMicMeter();
+  stopStudioPreview();
 
   /* Region crop. Confirming it is also a fresh user gesture, which is exactly
      what the Picture-in-Picture request below needs. */
-  if (mode !== 'camera' && $('#crop-step') && $('#crop-step').checked) {
+  if (needsScreen(mode) && $('#crop-step') && $('#crop-step').checked) {
     const confirmed = await openCropEditor();
     if (!confirmed) {
       recorder.cleanup();
       toast('Recording cancelled');
+      await acquireForMode(mode); // bring the camera preview and mic meter back
       return;
     }
   } else {
@@ -386,7 +785,7 @@ async function startRecording() {
   // Caveat: notes live in a separate Picture-in-Picture window, so they are
   // never part of a tab or window share. Sharing the ENTIRE screen captures
   // whatever is on that monitor, the notes window included.
-  if (mode !== 'camera' && AppState.notes.trim() && !AppState.notesTipShown) {
+  if (needsScreen(mode) && AppState.notes.trim() && !AppState.notesTipShown) {
     AppState.notesTipShown = true;
     toast('Notes open in a separate window. If you share your entire screen, drag that window to another monitor or it will be recorded.');
   }
@@ -404,7 +803,7 @@ async function startRecording() {
   /* Sharing a whole monitor (or the browser window this tab sits in) captures
      the in-tab bar along with everything else. Say so once, with the way out. */
   const surface = recorder.getBubbleSpace().kind;
-  if (surface !== 'browser' && !$('#control-bar').classList.contains('hidden')) {
+  if (recorder.screenStream && surface !== 'browser' && !$('#control-bar').classList.contains('hidden')) {
     toast('This control bar is inside what you are sharing, so it will be in the video. Alt+H hides it — Alt+S still finishes.');
   }
 }
@@ -432,8 +831,9 @@ function showRecordingChrome(on) {
   updateBarVisibility();
 
   // The bubble overlay only makes sense when it is actually baked into the
-  // video, i.e. in the composited screen+camera pipeline.
-  const hasBubble = on && recorder.usesCanvas;
+  // video, i.e. in the composited screen+camera pipeline. Studio places the
+  // camera itself, and a crop alone has no camera at all.
+  const hasBubble = on && recorder.mode === 'screen-cam' && !!recorder.cameraStream;
   const bubble = $('#cam-bubble');
   bubble.classList.toggle('hidden', !hasBubble);
   if (hasBubble) {
@@ -455,6 +855,10 @@ function showRecordingChrome(on) {
   }
   if (!on) {
     stopTimerUi();
+    $('#preview-panel').classList.add('hidden');
+    $('#preview-panel-video').srcObject = null;
+    if (AppState.pipPreview) AppState.pipPreview.srcObject = null;
+    AppState.previewWarned = false;
     $('#control-bar').classList.remove('paused');
     closeNotesPip();
     $('#notes-panel').classList.add('hidden');
@@ -471,6 +875,7 @@ function showRecordingChrome(on) {
       // Reopen the notes window if it was open during a previous take.
       setNotesOpen(true);
     }
+    attachPreviewStream();
   }
 }
 
@@ -571,20 +976,37 @@ async function finishRecording() {
   }
 
   const duration = Math.max(0.1, result.duration);
-  AppState.current = {
-    id: uuid(),
-    blob: result.blob,
-    url: URL.createObjectURL(result.blob),
+  const versions = [
+    { label: mainVersionLabel(AppState.setupMode), blob: result.blob, sessionId: result.sessionId },
+    ...(result.extras || []).map((e) => ({ label: e.label, blob: e.blob, sessionId: e.sessionId })),
+  ];
+  AppState.current = makeCurrent(versions, {
     duration,
     mode: AppState.setupMode,
     title: `Untitled video - ${fmtDate(Date.now())}`,
-    trimStart: 0,
-    trimEnd: duration,
     notes: AppState.notes,
     hasAudio: !!result.hasAudio,
-    sessionId: result.sessionId, // recovery data, cleared on save or discard
-  };
+  });
   location.hash = '#/preview';
+}
+
+/* The post-recording working copy. A take can hold several versions (see
+   EXTRA_OUTPUTS); `blob` and `url` always point at the one on screen, and
+   the trim is shared because every version covers the same moments. */
+function makeCurrent(versions, fields) {
+  versions.forEach((v) => { v.url = URL.createObjectURL(v.blob); });
+  return {
+    id: uuid(),
+    versions,
+    active: 0,
+    blob: versions[0].blob,
+    url: versions[0].url,
+    mimeType: versions[0].blob.type,
+    sessionId: versions[0].sessionId, // recovery data, cleared on save or discard
+    trimStart: 0,
+    trimEnd: fields.duration,
+    ...fields,
+  };
 }
 
 async function cancelRecording() {
@@ -618,7 +1040,7 @@ async function cancelRecording() {
   bubble.addEventListener('pointercancel', () => { dragging = false; });
 
   window.addEventListener('resize', () => {
-    if (recorder.state !== 'idle' && recorder.usesCanvas) syncBubbleGeometry();
+    if (recorder.state !== 'idle' && recorder.mode === 'screen-cam' && recorder.cameraStream) syncBubbleGeometry();
   });
 })();
 
@@ -669,7 +1091,10 @@ async function openControlPip() {
   if (!('documentPictureInPicture' in window)) return false;
   try {
     if (AppState.ctrlPipWin && !AppState.ctrlPipWin.closed) return true;
-    const pip = await window.documentPictureInPicture.requestWindow({ width: 420, height: 72 });
+    const pip = await window.documentPictureInPicture.requestWindow({
+      width: 420,
+      height: AppState.previewOn ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY,
+    });
     AppState.ctrlPipWin = pip;
     pip.document.title = 'Recording — Pengu Recorder';
 
@@ -689,11 +1114,25 @@ async function openControlPip() {
     }
     const extra = pip.document.createElement('style');
     extra.textContent = `
-      body { margin: 0; height: 100vh; display: flex; align-items: center;
-             justify-content: center; background: #14132b; overflow: hidden; }
+      body { margin: 0; height: 100vh; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 8px;
+             background: #14132b; overflow: hidden; padding: 8px; }
       .control-bar--pip { position: static !important; transform: none !important;
-             box-shadow: none !important; }`;
+             box-shadow: none !important; flex: none; }
+      .pip-preview { width: 100%; flex: 1 1 auto; min-height: 0; object-fit: contain;
+             background: #000; border-radius: 10px; display: block; }
+      .pip-preview.hidden { display: none; }`;
     pip.document.head.appendChild(extra);
+
+    /* The preview is fed by the recorded stream itself, so it shows exactly
+       the frames being encoded: backdrop, template, crop and camera included. */
+    const preview = pip.document.createElement('video');
+    preview.className = 'pip-preview' + (AppState.previewOn ? '' : ' hidden');
+    preview.autoplay = true;
+    preview.muted = true;          // never play the microphone back at the user
+    preview.playsInline = true;
+    pip.document.body.appendChild(preview);
+    AppState.pipPreview = preview;
 
     const bar = $('#control-bar').cloneNode(true);
     bar.removeAttribute('id');
@@ -718,10 +1157,13 @@ async function openControlPip() {
     wire('#cb-finish', finishRecording);
     wire('#cb-mute', toggleMute);
     wire('#cb-notes', () => setNotesOpen(!AppState.notesOpen));
+    wire('#cb-preview', () => setPreviewOn(!AppState.previewOn));
 
     pip.addEventListener('pagehide', () => {
       if (AppState.ctrlPipWin === pip) AppState.ctrlPipWin = null;
+      AppState.pipPreview = null;
       updateBarVisibility(); // controls must not vanish with the window
+      if (recorder.state !== 'idle') attachPreviewStream();  // fall back in tab
     });
     syncControlPip();
     updateBarVisibility();
@@ -731,6 +1173,83 @@ async function openControlPip() {
     AppState.ctrlPipWin = null;
     return false;
   }
+}
+
+/* ---------------- live preview ----------------
+   A monitor for the take while it runs. It plays `recorder.recordedStream`,
+   which is the stream going into the encoder, so what it shows is what the
+   file will contain.
+
+   It lives in the floating Picture-in-Picture window on purpose. A preview
+   drawn inside the page would be captured by a full-screen share and fed back
+   into itself, which is the classic video tunnel. The in-tab panel is only a
+   fallback, and it says so. */
+
+const PIP_HEIGHT_WITH_PREVIEW = 330;
+const PIP_HEIGHT_BAR_ONLY = 72;
+
+/** Point whichever preview surface exists at the stream being recorded. */
+function attachPreviewStream() {
+  const stream = recorder.recordedStream;
+  const live = recorder.state !== 'idle' && AppState.previewOn && !!stream;
+  const pipVideo = AppState.pipPreview;
+  const panel = $('#preview-panel');
+  const panelVideo = $('#preview-panel-video');
+
+  const wanted = live ? stream : null;
+
+  if (pipVideo) {
+    // The floating window is up: show it there and leave the page clean.
+    pipVideo.classList.toggle('hidden', !live);
+    if (pipVideo.srcObject !== wanted) pipVideo.srcObject = wanted;
+    if (live) pipVideo.play().catch(() => {});
+    panel.classList.add('hidden');
+    panelVideo.srcObject = null;
+    return;
+  }
+
+  panel.classList.toggle('hidden', !live);
+  if (panelVideo.srcObject !== wanted) panelVideo.srcObject = wanted;
+  if (live) {
+    panelVideo.play().catch(() => {});
+    warnAboutPreviewInShot();
+  }
+}
+
+/* An on-screen preview inside the captured surface records itself. Say it once. */
+function warnAboutPreviewInShot() {
+  if (AppState.previewWarned) return;
+  const surface = recorder.getBubbleSpace().kind;
+  if (surface === 'browser') return;  // tab share: the page is not in the shot
+  AppState.previewWarned = true;
+  toast('The preview is on screen inside what you are sharing, so it will record itself. Move it off the shared screen, or press Alt+V to hide it.');
+}
+
+function setPreviewOn(on) {
+  AppState.previewOn = on;
+  const pip = AppState.ctrlPipWin;
+  if (pip && !pip.closed) {
+    // Give the window back its space when the preview is put away.
+    try { pip.resizeTo(pip.outerWidth || 420, on ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY); } catch { /* the user can resize it */ }
+  }
+  attachPreviewStream();
+  for (const btn of previewButtons()) {
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  const box = $('#live-preview');
+  if (box) box.checked = on;
+  savePrefs();
+}
+
+/** The toggle exists twice: in the page and in the floating copy of the bar. */
+function previewButtons() {
+  const buttons = [$('#cb-preview')];
+  const pip = AppState.ctrlPipWin;
+  if (pip && !pip.closed) {
+    buttons.push(pip.document.querySelector('.control-bar--pip #cb-preview'));
+  }
+  return buttons.filter(Boolean);
 }
 
 function closeControlPip() {
@@ -1110,10 +1629,48 @@ function probeDuration(url) {
 
 /* ---------------- preview view ---------------- */
 
+function setActiveVersion(index) {
+  const c = AppState.current;
+  const v = c.versions[index];
+  if (!v) return;
+  c.active = index;
+  c.blob = v.blob;
+  c.url = v.url;
+  c.mimeType = v.blob.type;
+  const video = $('#preview-video');
+  video.src = v.url;
+  video.addEventListener('loadedmetadata', () => { video.currentTime = c.trimStart; }, { once: true });
+  document.querySelectorAll('#version-tabs .version-tab').forEach((t, i) => {
+    t.setAttribute('aria-selected', i === index ? 'true' : 'false');
+  });
+}
+
+function renderVersionTabs() {
+  const c = AppState.current;
+  const tabs = $('#version-tabs');
+  const many = c.versions.length > 1;
+  tabs.classList.toggle('hidden', !many);
+  tabs.innerHTML = '';
+  if (many) {
+    c.versions.forEach((v, i) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'version-tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', i === c.active ? 'true' : 'false');
+      tab.textContent = v.label;
+      tab.addEventListener('click', () => setActiveVersion(i));
+      tabs.appendChild(tab);
+    });
+  }
+  $('#save-btn').textContent = many ? `Save all ${c.versions.length} versions` : 'Save to library';
+}
+
 function enterPreview() {
   const c = AppState.current;
   const video = $('#preview-video');
 
+  renderVersionTabs();
   video.src = c.url;
   $('#preview-audio-note').classList.toggle('hidden', c.hasAudio !== false);
   fixWebmDuration(video);
@@ -1192,47 +1749,179 @@ async function saveCurrent() {
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
 
-  const thumbnail = await makeThumbnail(c.url, c.trimStart + 0.5);
+  const versions = c.versions;
+  const many = versions.length > 1;
+  const saved = new Set(c.savedVersions || []);
   try {
-    await PenguDB.save({
-      id: c.id,
-      title: c.title,
-      createdAt: Date.now(),
-      duration: c.duration,
-      mode: c.mode,
-      trimStart: c.trimStart,
-      trimEnd: c.trimEnd,
-      thumbnail,
-      notes: c.notes || '',
-      views: 0, // real counter; incremented on each watch-view open
-      size: c.blob.size,
-    }, c.blob);
+    // Each version becomes its own library video. Already-saved ones are
+    // skipped, so a retry after a storage error does not duplicate them.
+    for (let i = 0; i < versions.length; i++) {
+      if (saved.has(i)) continue;
+      const v = versions[i];
+      const thumbnail = await makeThumbnail(v.url, c.trimStart + 0.5);
+      await PenguDB.save({
+        id: i === 0 ? c.id : uuid(),
+        title: many ? `${c.title} · ${v.label}` : c.title,
+        createdAt: Date.now() + i, // keeps the versions in order in the library
+        duration: c.duration,
+        mode: c.mode,
+        trimStart: c.trimStart,
+        trimEnd: c.trimEnd,
+        thumbnail,
+        notes: c.notes || '',
+        views: 0, // real counter; incremented on each watch-view open
+        size: v.blob.size,
+        mimeType: v.blob.type,
+      }, v.blob);
+      saved.add(i);
+      c.savedVersions = [...saved];
+    }
 
-    if (c.sessionId) PenguDB.clearSession(c.sessionId).catch(() => {});
-    toast('Saved to library', 'success');
+    versions.forEach((v) => { if (v.sessionId) PenguDB.clearSession(v.sessionId).catch(() => {}); });
+    toast(many ? `${versions.length} versions saved to library` : 'Saved to library', 'success');
     AppState.current = null;
     location.hash = '#/';
   } catch (err) {
     const est = await PenguDB.estimate();
-    const hint = est && est.freeBytes < c.blob.size
+    const left = versions.filter((_, i) => !saved.has(i)).reduce((n, v) => n + v.blob.size, 0);
+    const hint = est && est.freeBytes < left
       ? 'not enough browser storage left — delete a video and retry'
       : 'storage error';
     toast(`Could not save: ${hint}`, 'error');
   } finally {
     saveBtn.disabled = false;
-    saveBtn.textContent = 'Save to library';
+    if (AppState.current) renderVersionTabs();
   }
 }
 
 function discardCurrent() {
   const c = AppState.current;
   if (c) {
-    URL.revokeObjectURL(c.url);
-    if (c.sessionId) PenguDB.clearSession(c.sessionId).catch(() => {});
+    for (const v of c.versions) {
+      URL.revokeObjectURL(v.url);
+      if (v.sessionId) PenguDB.clearSession(v.sessionId).catch(() => {});
+    }
   }
   AppState.current = null;
   toast('Recording discarded');
   location.hash = '#/';
+}
+
+/* ---------------- thumbnails ---------------- */
+
+/* The frame on screen, as a JPEG at YouTube's thumbnail size: 1280 x 720
+   for a video, 1080 x 1920 for a Short. Cover-fit, so an odd-shaped take
+   is cropped rather than letterboxed. */
+function saveThumbnail(video, title) {
+  if (!video || video.readyState < 2 || !video.videoWidth) {
+    toast('The video is still loading. Try again in a moment.', 'error');
+    return;
+  }
+  const vertical = video.videoHeight > video.videoWidth;
+  const [W, H] = vertical ? [1080, 1920] : [1280, 720];
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const scale = Math.max(W / video.videoWidth, H / video.videoHeight);
+  const sw = W / scale;
+  const sh = H / scale;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(video, (video.videoWidth - sw) / 2, (video.videoHeight - sh) / 2, sw, sh, 0, 0, W, H);
+  canvas.toBlob((blob) => {
+    if (!blob) { toast('Could not capture this frame', 'error'); return; }
+    triggerDownload(blob, `${safeFileName(title)} - thumbnail.jpg`);
+    toast(`Thumbnail saved (${W} x ${H}). Pause on another frame to pick a different one.`, 'success');
+  }, 'image/jpeg', 0.92);
+}
+
+/* ---------------- downloads: MP4 / WebM, trimmed ---------------- */
+
+function safeFileName(title) {
+  return (title || '').replace(/[^\w\- ]+/g, '').trim() || 'pengu-recording';
+}
+
+function triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  // Revoking straight away can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/**
+ * Download `v` ({ blob, title, duration, trimStart, trimEnd }) as `format`.
+ * The original file goes out untouched when it already is that format and
+ * nothing was trimmed; anything else is re-encoded by converter.js.
+ */
+async function downloadVideo(v, format) {
+  if (AppState.exportAbort) return; // one export at a time
+  const native = PenguRecorder.formatOf(v.blob.type);
+  const start = v.trimStart || 0;
+  const end = v.trimEnd ?? v.duration;
+  const trimmed = start > 0.05 || end < v.duration - 0.05;
+  const name = `${safeFileName(v.title)}.${format}`;
+
+  if (format === native && !trimmed) {
+    triggerDownload(v.blob, name);
+    return;
+  }
+  if (!PenguRecorder.formatSupported(format)) {
+    toast(format === 'mp4'
+      ? 'This browser cannot encode MP4. Use Chrome or Edge 126 or newer, or download WebM.'
+      : 'This browser cannot encode WebM. Download MP4 instead.', 'error');
+    return;
+  }
+
+  const ac = new AbortController();
+  AppState.exportAbort = ac;
+  openExportDialog(format, { convert: format !== native, trimmed, seconds: end - start });
+  try {
+    const out = await PenguConverter.exportVideo(v.blob, {
+      format,
+      start,
+      // Untrimmed: play to the real end, which can run a little past the
+      // timer-based duration we stored.
+      end: trimmed ? end : Infinity,
+      duration: v.duration,
+      signal: ac.signal,
+      onProgress: setExportProgress,
+    });
+    triggerDownload(out, name);
+    toast(`${format.toUpperCase()} ready`, 'success');
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      toast('Export cancelled');
+    } else {
+      console.warn('Export failed', err);
+      toast('Export failed. Try the other format, or download the original.', 'error');
+    }
+  } finally {
+    AppState.exportAbort = null;
+    $('#export-overlay').classList.add('hidden');
+  }
+}
+
+function openExportDialog(format, { convert, trimmed, seconds }) {
+  const label = format.toUpperCase();
+  $('#export-title').textContent = `Preparing your ${label}`;
+  const what = convert && trimmed ? `Converting to ${label} and cutting it to your trim.`
+    : convert ? `Converting to ${label}.`
+      : 'Cutting the video to your trim.';
+  $('#export-sub').textContent =
+    `${what} The video plays once in the background, so this takes about ${fmtTime(seconds)}. Keep this tab open.`;
+  setExportProgress(0);
+  $('#export-overlay').classList.remove('hidden');
+  $('#export-cancel').focus();
+}
+
+function setExportProgress(fraction) {
+  const pct = Math.round(fraction * 100);
+  $('#export-fill').style.width = `${pct}%`;
+  $('#export-readout').textContent = `${pct}%`;
+  $('#export-overlay .export-bar').setAttribute('aria-valuenow', String(pct));
 }
 
 /* ---------------- watch view ---------------- */
@@ -1288,6 +1977,13 @@ async function enterWatch(id) {
   $('#watch-notes').classList.toggle('hidden', !hasNotes);
   if (hasNotes) $('#watch-notes-text').textContent = record.notes;
 
+  const asDownload = () => ({
+    blob, title: record.title, duration: record.duration, trimStart: start, trimEnd: end,
+  });
+  $('#watch-download-mp4').onclick = () => downloadVideo(asDownload(), 'mp4');
+  $('#watch-download-webm').onclick = () => downloadVideo(asDownload(), 'webm');
+  $('#watch-thumb').onclick = () => saveThumbnail(video, record.title);
+
   $('#watch-delete').onclick = async () => {
     await PenguDB.remove(record.id);
     releaseWatchUrl();
@@ -1310,11 +2006,16 @@ async function checkRecovery() {
   sessions = sessions.filter((s) => Date.now() - (s.updatedAt || 0) > 15000);
   if (!sessions.length) return;
 
-  // Newest orphaned session wins; older leftovers are dropped.
-  const [session, ...stale] = sessions;
-  stale.forEach((s) => PenguDB.clearSession(s.sessionId).catch(() => {}));
+  /* Newest orphaned take wins; older leftovers are dropped. Extra versions
+     (extraOf) ride along with the take they belong to. */
+  const mains = sessions.filter((s) => !s.extraOf);
+  const session = (mains.length ? mains : sessions)[0];
+  const extras = sessions.filter((s) => s.extraOf && s.extraOf === session.sessionId);
+  sessions
+    .filter((s) => s !== session && !extras.includes(s))
+    .forEach((s) => PenguDB.clearSession(s.sessionId).catch(() => {}));
 
-  AppState.recovery = session;
+  AppState.recovery = { ...session, extras };
   const banner = $('#recovery-banner');
   const secs = Math.round((session.durationMs || 0) / 1000);
   $('#recovery-detail').textContent =
@@ -1327,29 +2028,28 @@ async function restoreRecovery() {
   if (!session) return;
   $('#recovery-banner').classList.add('hidden');
 
-  const parts = await PenguDB.getChunks(session.sessionId);
-  if (!parts.length) {
+  const versions = [];
+  for (const s of [session, ...(session.extras || [])]) {
+    const parts = await PenguDB.getChunks(s.sessionId).catch(() => []);
+    if (!parts.length) continue;
+    const type = (s.mimeType || 'video/webm').split(';')[0];
+    versions.push({ label: s.label || 'Main', blob: new Blob(parts, { type }), sessionId: s.sessionId });
+  }
+  if (!versions.length) {
     toast('Nothing left to recover', 'error');
     return;
   }
-  const type = (session.mimeType || 'video/webm').split(';')[0];
-  const blob = new Blob(parts, { type });
-  const url = URL.createObjectURL(blob);
-  const probed = await withTimeout(probeDuration(url), 4000, null);
+  const probeUrl = URL.createObjectURL(versions[0].blob);
+  const probed = await withTimeout(probeDuration(probeUrl), 4000, null);
+  URL.revokeObjectURL(probeUrl);
   const duration = Math.max(0.1, probed || (session.durationMs || 0) / 1000 || 1);
 
-  AppState.current = {
-    id: uuid(),
-    blob,
-    url,
+  AppState.current = makeCurrent(versions, {
     duration,
     mode: session.mode || 'screen',
     title: `Recovered video - ${fmtDate(session.startedAt || Date.now())}`,
-    trimStart: 0,
-    trimEnd: duration,
     notes: '',
-    sessionId: session.sessionId,
-  };
+  });
   AppState.recovery = null;
   toast('Recording recovered', 'success');
   location.hash = '#/preview';
@@ -1359,7 +2059,11 @@ async function discardRecovery() {
   const session = AppState.recovery;
   AppState.recovery = null;
   $('#recovery-banner').classList.add('hidden');
-  if (session) await PenguDB.clearSession(session.sessionId).catch(() => {});
+  if (session) {
+    for (const s of [session, ...(session.extras || [])]) {
+      await PenguDB.clearSession(s.sessionId).catch(() => {});
+    }
+  }
   toast('Unsaved recording discarded');
 }
 
@@ -1462,9 +2166,56 @@ function initEvents() {
   $('#crop-step').addEventListener('change', (e) => {
     if (!e.target.checked) recorder.crop = { top: 0, right: 0, bottom: 0, left: 0 };
   });
+  $('#live-preview').addEventListener('change', (e) => setPreviewOn(e.target.checked));
   $('#hifi-audio').addEventListener('change', async (e) => {
     AppState.hiFiAudio = e.target.checked;
     await acquireForMode(AppState.setupMode);
+  });
+  $('#quality').addEventListener('change', (e) => { AppState.quality = e.target.value; savePrefs(); });
+  $('#format').addEventListener('change', (e) => { AppState.format = e.target.value; savePrefs(); });
+
+  // Studio layout. The preview reads AppState.studio every frame, so a
+  // change shows up without restarting anything.
+  const studioChange = (key) => (e) => {
+    AppState.studio[key] = e.target.value;
+    savePrefs();
+    renderTemplatePicker();
+  };
+  $('#cam-size').addEventListener('change', studioChange('cameraSize'));
+  $('#studio-side').addEventListener('change', studioChange('cameraSide'));
+  $('#studio-shape').addEventListener('change', studioChange('cameraShape'));
+  $('#studio-corner').addEventListener('change', studioChange('cameraCorner'));
+  $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
+  document.querySelectorAll('.aspect-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const aspect = btn.dataset.aspect;
+      AppState.studio.aspect = aspect;
+      // A Short is watched on a phone: the camera reads best on top. A Reel
+      // shows what you are talking about on top, with you underneath.
+      if (aspect === 'vertical') AppState.studio.cameraSide = 'left';
+      if (aspect === 'reel') {
+        AppState.studio.template = 'split';
+        AppState.studio.cameraSide = 'right';
+      }
+      $('#studio-side').value = AppState.studio.cameraSide;
+      savePrefs();
+      applyStudioAspect();
+      applyStudioTemplate();
+    });
+  });
+
+  // Drop an image file onto the gallery to add it as a background.
+  const gallery = $('#bg-gallery');
+  gallery.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    gallery.classList.add('drag-over');
+  });
+  gallery.addEventListener('dragleave', () => gallery.classList.remove('drag-over'));
+  gallery.addEventListener('drop', (e) => {
+    e.preventDefault();
+    gallery.classList.remove('drag-over');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) addBackgroundFile(file);
   });
 
   // Devices come and go (headset unplugged, external cam attached).
@@ -1488,6 +2239,8 @@ function initEvents() {
   $('#cb-finish').addEventListener('click', finishRecording);
   $('#cb-mute').addEventListener('click', toggleMute);
   $('#cb-hide').addEventListener('click', () => setBarHidden(true));
+  $('#cb-preview').addEventListener('click', () => setPreviewOn(!AppState.previewOn));
+  $('#preview-panel-close').addEventListener('click', () => setPreviewOn(false));
 
   // Keyboard shortcuts, ignored while typing.
   document.addEventListener('keydown', (e) => {
@@ -1500,6 +2253,7 @@ function initEvents() {
     else if (key === 'm') { e.preventDefault(); toggleMute(); }
     else if (key === 'n') { e.preventDefault(); setNotesOpen(!AppState.notesOpen); }
     else if (key === 'h') { e.preventDefault(); setBarHidden(!AppState.barHidden); }
+    else if (key === 'v') { e.preventDefault(); setPreviewOn(!AppState.previewOn); }
   });
 
   // Closing the tab mid-take: warn, and rely on the flushed chunks otherwise.
@@ -1528,13 +2282,25 @@ function initEvents() {
     }
     toast('Link copied — it only opens in this browser profile', 'success');
   });
-  $('#download-btn').addEventListener('click', () => {
+  const downloadCurrent = (format) => {
     const c = AppState.current;
     if (!c) return;
-    const a = document.createElement('a');
-    a.href = c.url;
-    a.download = `${c.title.replace(/[^\w\- ]+/g, '').trim() || 'pengu-recording'}.webm`;
-    a.click();
+    c.title = $('#preview-title').value.trim() || c.title;
+    const v = c.versions[c.active];
+    const title = c.versions.length > 1 ? `${c.title} - ${v.label}` : c.title;
+    downloadVideo({ ...c, title }, format);
+  };
+  $('#download-mp4-btn').addEventListener('click', () => downloadCurrent('mp4'));
+  $('#download-webm-btn').addEventListener('click', () => downloadCurrent('webm'));
+  $('#thumb-btn').addEventListener('click', () => {
+    const c = AppState.current;
+    if (!c) return;
+    const base = $('#preview-title').value.trim() || c.title;
+    const many = c.versions.length > 1;
+    saveThumbnail($('#preview-video'), many ? `${base} - ${c.versions[c.active].label}` : base);
+  });
+  $('#export-cancel').addEventListener('click', () => {
+    if (AppState.exportAbort) AppState.exportAbort.abort();
   });
   $('#save-btn').addEventListener('click', saveCurrent);
   $('#discard-btn').addEventListener('click', discardCurrent);
@@ -1551,6 +2317,7 @@ function initEvents() {
 
 /* ---------------- boot ---------------- */
 
+loadPrefs();
 initEvents();
 router();
 PenguDB.requestPersistence(); // keeps the browser from evicting saved videos

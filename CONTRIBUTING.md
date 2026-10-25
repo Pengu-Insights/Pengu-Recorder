@@ -19,15 +19,15 @@ python -m http.server 8080
   request that adds a build step is unlikely to be merged.
 - Comments explain why, not what. If a workaround exists because a browser
   behaves oddly, say which browser and what it does.
-- Keep the three recording paths in mind: screen only and camera only feed the
-  source track straight to `MediaRecorder`, and only screen plus camera or a
-  crop go through the compositing canvas.
+- Keep the recording paths in mind: screen only and camera only feed the
+  source track straight to `MediaRecorder`, and only screen plus camera, Studio
+  or a crop go through the compositing canvas.
 
 ## Before opening a pull request
 
 Browser APIs here are hard to unit test, so test by hand and say what you did:
 
-1. Record in all three modes, with and without a crop.
+1. Record in all four modes, with and without a crop, in MP4 and in WebM.
 2. Pause, resume, restart, cancel, finish.
 3. Close the tab mid-recording and check that the recovery banner offers the
    take back.
