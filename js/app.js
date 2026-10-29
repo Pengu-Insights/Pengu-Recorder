@@ -1807,6 +1807,12 @@ function renderVersionTabs() {
     });
   }
   $('#save-btn').textContent = many ? `Save all ${c.versions.length} versions` : 'Save to library';
+
+  const all = $('#download-all-btn');
+  all.classList.toggle('hidden', !many);
+  if (many) {
+    all.textContent = `Download all ${c.versions.length} as ${AppState.format.toUpperCase()}`;
+  }
 }
 
 function enterPreview() {
@@ -1835,16 +1841,32 @@ function enterPreview() {
   };
   updateLabels();
 
+  /* A range only stops on whole steps, so the far end of the track can sit a
+     fraction short of the real duration. Left alone that counts as a trim and
+     costs a full re-encode on download, for nothing. Both ends snap. */
+  const EDGE = 0.2;
+  /* Seeking a long take is slow enough to stutter under a drag, so the player
+     follows the handle once it settles rather than on every pixel. */
+  let seekTimer = null;
+  const seekSoon = (t) => {
+    clearTimeout(seekTimer);
+    seekTimer = setTimeout(() => { video.currentTime = t; }, 120);
+  };
+
   startSlider.oninput = () => {
-    c.trimStart = Math.min(parseFloat(startSlider.value), c.trimEnd - 0.1);
+    let value = parseFloat(startSlider.value);
+    if (value <= EDGE) value = 0;
+    c.trimStart = Math.min(value, c.trimEnd - 0.1);
     startSlider.value = c.trimStart;
-    video.currentTime = c.trimStart;
+    seekSoon(c.trimStart);
     updateLabels();
   };
   endSlider.oninput = () => {
-    c.trimEnd = Math.max(parseFloat(endSlider.value), c.trimStart + 0.1);
+    let value = parseFloat(endSlider.value);
+    if (value >= c.duration - EDGE) value = c.duration;
+    c.trimEnd = Math.max(value, c.trimStart + 0.1);
     endSlider.value = c.trimEnd;
-    video.currentTime = c.trimEnd;
+    seekSoon(c.trimEnd);
     updateLabels();
   };
 }
@@ -2000,7 +2022,11 @@ function triggerDownload(blob, name) {
  * nothing was trimmed; anything else is re-encoded by converter.js.
  */
 async function downloadVideo(v, format) {
-  if (AppState.exportAbort) return; // one export at a time
+  if (AppState.exportAbort) {
+    // Used to return in silence, which looked like a dead button.
+    toast('Still preparing the last download. Wait for it to finish, or cancel it.');
+    return;
+  }
   const native = PenguRecorder.formatOf(v.blob.type);
   const start = v.trimStart || 0;
   const end = v.trimEnd ?? v.duration;
@@ -2044,6 +2070,43 @@ async function downloadVideo(v, format) {
   } finally {
     AppState.exportAbort = null;
     $('#export-overlay').classList.add('hidden');
+  }
+}
+
+/* Every version of the take, one after another. Versions that already are
+   `format` and are not trimmed go out untouched and land in a second; the
+   rest queue behind the converter, because two encodes at once are slower
+   than two in a row. */
+async function downloadAllVersions(format) {
+  const c = AppState.current;
+  if (!c || AppState.exportAbort) {
+    if (c) toast('Still preparing the last download. Wait for it to finish, or cancel it.');
+    return;
+  }
+  c.title = $('#preview-title').value.trim() || c.title;
+  const btn = $('#download-all-btn');
+  const label = btn.textContent;
+  btn.disabled = true;
+
+  let done = 0;
+  try {
+    for (const v of c.versions) {
+      btn.textContent = `Downloading ${done + 1} of ${c.versions.length}: ${v.label}…`;
+      await downloadVideo({
+        blob: v.blob,
+        title: `${c.title} - ${v.label}`,
+        duration: c.duration,
+        trimStart: c.trimStart,
+        trimEnd: c.trimEnd,
+      }, format);
+      done += 1;
+      // Chrome drops downloads fired back to back from one page.
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    toast(`${done} file${done === 1 ? '' : 's'} downloaded`, 'success');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
 }
 
@@ -2443,6 +2506,7 @@ function initEvents() {
     const title = c.versions.length > 1 ? `${c.title} - ${v.label}` : c.title;
     downloadVideo({ ...c, title }, format);
   };
+  $('#download-all-btn').addEventListener('click', () => downloadAllVersions(AppState.format));
   $('#download-mp4-btn').addEventListener('click', () => downloadCurrent('mp4'));
   $('#download-webm-btn').addEventListener('click', () => downloadCurrent('webm'));
   $('#thumb-btn').addEventListener('click', () => {
