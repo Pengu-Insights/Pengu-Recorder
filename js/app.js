@@ -457,7 +457,9 @@ function extraUnavailable(o) {
   if (o.kind === 'studio' && o.opts.aspect === s.aspect && o.opts.template === s.template) {
     return 'Same as your main layout';
   }
-  if (o.kind === 'screen' && !needsScreen('studio')) return 'No screen in the "just you" layout';
+  if (o.kind === 'screen' && !needsScreen('studio') && !recorder.hasFileSource) {
+    return 'No screen in the "just you" layout';
+  }
   if (o.kind === 'studio' && s.template === 'camera') return 'Needs a screen share';
   return '';
 }

@@ -488,8 +488,15 @@ class PenguRecorder {
       if (!this.cameraStream) return null;
       track = this.cameraStream.getVideoTracks()[0];
     } else if (spec.kind === 'screen') {
-      if (!this.screenStream) return null;
-      if (this.hasCrop) {
+      if (!this.screenStream && !this.hasFileSource) return null;
+      if (this.hasFileSource) {
+        /* Commenting over a file: the "screen" version is that footage with
+           the crop applied, drawn on its own canvas like a cropped capture. */
+        const v = this.fileVideo;
+        out.canvas = document.createElement('canvas');
+        out.canvas.width = even(v.videoWidth * this.cropScale.w);
+        out.canvas.height = even(v.videoHeight * this.cropScale.h);
+      } else if (this.hasCrop) {
         // A crop has to be applied on a canvas; without one the source track
         // goes straight in, untouched.
         const s = this._trackSettings(this.screenStream);
