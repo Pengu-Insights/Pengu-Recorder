@@ -124,6 +124,14 @@ function loadPrefs() {
   }
   if (typeof saved.quality === 'string') AppState.quality = saved.quality;
   if (typeof saved.previewOn === 'boolean') AppState.previewOn = saved.previewOn;
+  const frame = saved.cameraFrame;
+  if (frame && typeof frame.zoom === 'number') {
+    recorder.cameraFrame = {
+      zoom: Math.min(3, Math.max(1, frame.zoom)),
+      x: Math.min(1, Math.max(0, frame.x)),
+      y: Math.min(1, Math.max(0, frame.y)),
+    };
+  }
   if (saved.studio && typeof saved.studio === 'object') {
     for (const k of STUDIO_KEYS) {
       if (typeof saved.studio[k] === 'string') AppState.studio[k] = saved.studio[k];
@@ -145,6 +153,7 @@ function savePrefs() {
       format: AppState.format,
       quality: AppState.quality,
       previewOn: AppState.previewOn,
+      cameraFrame: recorder.cameraFrame,
       studio: AppState.studio,
     }));
   } catch { /* storage unavailable: keep the choice for this visit only */ }
@@ -273,6 +282,7 @@ async function enterSetup() {
   $('#hifi-audio').checked = AppState.hiFiAudio;
   $('#live-preview').checked = AppState.previewOn;
   renderVideoSource();
+  applyCameraFrameUi();
   $('#cb-preview').classList.toggle('active', AppState.previewOn);
   $('#cb-preview').setAttribute('aria-pressed', AppState.previewOn ? 'true' : 'false');
   await acquireForMode(AppState.setupMode);
@@ -305,6 +315,67 @@ function needsScreen(mode) {
   return !(mode === 'studio' && AppState.studio.template === 'camera');
 }
 
+/* ---------------- camera framing ----------------
+   Zoom and pan the camera before recording, so the bubble holds a face
+   instead of half the room. The numbers live on the recorder, which applies
+   them in every draw path: the bubble, the Studio templates and the extra
+   outputs. */
+
+function applyCameraFrameUi() {
+  const f = recorder.cameraFrame;
+  const zoomLabel = $('#cam-zoom-val');
+  if (zoomLabel) zoomLabel.textContent = `${f.zoom.toFixed(2).replace(/0$/, '')}x`;
+  const slider = $('#cam-zoom');
+  if (slider && Math.abs(parseFloat(slider.value) - f.zoom) > 0.001) slider.value = f.zoom;
+
+  /* The self-view is mirrored, so dragging right has to move the visible part
+     right as the user sees it, which is the opposite column of the source. */
+  const preview = $('#cam-preview');
+  if (preview) {
+    preview.style.objectPosition = `${(1 - f.x) * 100}% ${f.y * 100}%`;
+    preview.style.transform = `scaleX(-1) scale(${f.zoom})`;
+  }
+  const bubble = $('#bubble-video');
+  if (bubble) {
+    bubble.style.objectPosition = `${f.x * 100}% ${f.y * 100}%`;
+    bubble.style.transform = `scale(${f.zoom})`;
+  }
+}
+
+function setCameraZoom(zoom) {
+  recorder.cameraFrame.zoom = Math.min(3, Math.max(1, zoom));
+  applyCameraFrameUi();
+  savePrefs();
+}
+
+function initCameraFraming() {
+  $('#cam-zoom').addEventListener('input', (e) => setCameraZoom(parseFloat(e.target.value)));
+
+  // Drag the self-view to pick what stays in frame.
+  const wrap = $('#cam-preview-wrap');
+  let dragging = false;
+  let last = null;
+  wrap.addEventListener('pointerdown', (e) => {
+    if (recorder.cameraFrame.zoom <= 1.01) return;   // nothing to pan at 1x
+    dragging = true;
+    last = { x: e.clientX, y: e.clientY };
+    try { wrap.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const f = recorder.cameraFrame;
+    const size = wrap.offsetWidth || 180;
+    // Mirrored view again: dragging right means looking further left.
+    f.x = Math.min(1, Math.max(0, f.x + (e.clientX - last.x) / (size * f.zoom)));
+    f.y = Math.min(1, Math.max(0, f.y - (e.clientY - last.y) / (size * f.zoom)));
+    last = { x: e.clientX, y: e.clientY };
+    applyCameraFrameUi();
+  });
+  const stop = () => { if (dragging) { dragging = false; savePrefs(); } };
+  wrap.addEventListener('pointerup', stop);
+  wrap.addEventListener('pointercancel', stop);
+}
+
 /* ---------------- commenting over an existing video ----------------
    The screen slot takes a video file instead of a live capture, so a take you
    already have can play inside the template while the camera and microphone
@@ -332,8 +403,19 @@ function clearVideoFile() {
   startStudioPreview();
 }
 
+function applyFilePlayback() {
+  recorder.setFilePlayback({
+    muted: $('#file-muted').checked,
+    volume: parseFloat($('#file-volume').value),
+    rate: parseFloat($('#file-rate').value),
+  });
+  $('#file-volume-val').textContent = `${Math.round(parseFloat($('#file-volume').value) * 100)}%`;
+  $('#file-volume').disabled = $('#file-muted').checked;
+}
+
 function renderVideoSource() {
   const on = recorder.hasFileSource;
+  $('#file-playback').classList.toggle('hidden', !on);
   const name = AppState.videoFileName || recorder.fileName || 'chosen file';
   $('#video-file-btn').textContent = on ? `Video: ${name}` : 'Comment over a video…';
   $('#video-file-clear').classList.toggle('hidden', !on);
@@ -450,6 +532,7 @@ async function renderTemplatePicker() {
     canvas.width = w;
     canvas.height = h;
     PenguStudio.draw(canvas.getContext('2d'), w, h, {
+      cameraFrame: recorder.cameraFrame,
       background, screen: null, camera: null, placeholder: true,
       opts: { ...AppState.studio, template: t.id, name: '' },
     });
@@ -571,6 +654,7 @@ function startStudioPreview() {
 
   const tick = () => {
     PenguStudio.draw(ctx, canvas.width, canvas.height, {
+      cameraFrame: recorder.cameraFrame,
       background: state.background,
       screen: fileVideo || null,
       camera: state.video,
@@ -2302,6 +2386,10 @@ function initEvents() {
     e.target.value = '';   // picking the same file twice must still fire
   });
   $('#video-file-clear').addEventListener('click', clearVideoFile);
+  $('#file-muted').addEventListener('change', applyFilePlayback);
+  $('#file-volume').addEventListener('input', applyFilePlayback);
+  $('#file-rate').addEventListener('change', applyFilePlayback);
+  initCameraFraming();
   $('#cb-preview').addEventListener('click', () => setPreviewOn(!AppState.previewOn));
   $('#preview-panel-close').addEventListener('click', () => setPreviewOn(false));
 

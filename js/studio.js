@@ -363,14 +363,24 @@ const PenguStudio = (() => {
     ctx.globalAlpha = 1;
   }
 
-  /** object-fit: cover from a video into a rect. */
-  function drawCover(ctx, video, r) {
+  /**
+   * object-fit: cover from a video into a rect, with optional framing:
+   * `frame.zoom` tightens the crop (2 = twice as close) and `frame.x` / `frame.y`
+   * move the part of the source that stays visible, 0.5 being centred.
+   */
+  function drawCover(ctx, video, r, frame) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    const scale = Math.max(r.w / vw, r.h / vh);
-    const sw = r.w / scale;
-    const sh = r.h / scale;
-    ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, r.x, r.y, r.w, r.h);
+    const zoom = Math.max(1, (frame && frame.zoom) || 1);
+    const scale = Math.max(r.w / vw, r.h / vh) * zoom;
+    const sw = Math.min(vw, r.w / scale);
+    const sh = Math.min(vh, r.h / scale);
+    const fx = frame && typeof frame.x === 'number' ? frame.x : 0.5;
+    const fy = frame && typeof frame.y === 'number' ? frame.y : 0.5;
+    // The focus point cannot pull the window past the edges of the frame.
+    const sx = Math.min(Math.max(fx * vw - sw / 2, 0), vw - sw);
+    const sy = Math.min(Math.max(fy * vh - sh / 2, 0), vh - sh);
+    ctx.drawImage(video, sx, sy, sw, sh, r.x, r.y, r.w, r.h);
   }
 
   function drawNameTag(ctx, cam, name, U) {
@@ -450,7 +460,7 @@ const PenguStudio = (() => {
       ctx.fillRect(L.cam.x, L.cam.y, L.cam.w, L.cam.h);
       // Not mirrored, same as the camera bubble: the video shows the real
       // orientation, so a sign or a T-shirt reads the right way round.
-      if (cam && cam.readyState >= 2 && cam.videoWidth) drawCover(ctx, cam, L.cam);
+      if (cam && cam.readyState >= 2 && cam.videoWidth) drawCover(ctx, cam, L.cam, src.cameraFrame);
       else if (src.placeholder) paintPerson(ctx, L.cam);
       ctx.restore();
 

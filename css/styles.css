@@ -1405,3 +1405,34 @@ body {
   line-height: 1.45;
   color: var(--ink-faint);
 }
+
+/* ============ Camera framing and footage playback ============ */
+#camera-frame-field strong { color: var(--brand); font-variant-numeric: tabular-nums; }
+#camera-frame-field small,
+#file-playback small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+#cam-preview-wrap { touch-action: none; }
+#cam-preview-wrap:active { cursor: grabbing; }
+
+#file-playback {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.playback-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: end;
+}
+
+.playback-row .field span { font-size: 12.5px; }
+.playback-row strong { color: var(--brand); font-variant-numeric: tabular-nums; }

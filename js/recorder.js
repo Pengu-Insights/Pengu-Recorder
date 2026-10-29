@@ -67,6 +67,9 @@ class PenguRecorder {
     this.fileUrl = null;
     this.fileName = '';
     this.fileSource = null;        // MediaElementAudioSourceNode, built once per element
+    this.fileMuted = false;        // drop the footage audio and keep only the commentary
+    this.fileVolume = 1;
+    this.fileRate = 1;
 
     this.screenVideo = null;       // hidden draw sources
     this.camVideo = null;
@@ -98,6 +101,11 @@ class PenguRecorder {
                 browser viewport — see getBubbleSpace()).
        radius : fraction of the captured surface height. */
     this.bubble = { x: 0.13, y: 0.80, radius: 0.13 };
+
+    /* How much of the camera frame to keep: zoom 1 is the whole frame, and
+       x / y are the point that stays centred. Lets someone fill the bubble
+       with their face instead of half the room. */
+    this.cameraFrame = { zoom: 1, x: 0.5, y: 0.5 };
 
     /* Region crop: how much of each edge of the captured frame to throw away,
        as a fraction of the source. Used to keep the Windows taskbar, the
@@ -280,6 +288,21 @@ class PenguRecorder {
     });
   }
 
+  /** Mute, volume (0..1) and speed for the video being commented over. */
+  setFilePlayback({ muted, volume, rate } = {}) {
+    if (!this.fileVideo) return;
+    if (typeof muted === 'boolean') this.fileMuted = muted;
+    if (typeof volume === 'number') this.fileVolume = Math.min(1, Math.max(0, volume));
+    if (typeof rate === 'number') this.fileRate = Math.min(4, Math.max(0.25, rate));
+    this.fileVideo.volume = this.fileVolume;
+    this.fileVideo.playbackRate = this.fileRate;
+    /* While recording the element is live in the audio graph, so muting it
+       takes the sound out of the take and out of the room at once, which is
+       what someone wants when they are narrating over footage. In the setup
+       preview it is muted regardless. */
+    if (this.state !== 'idle') this.fileVideo.muted = this.fileMuted;
+  }
+
   clearVideoFile() {
     if (this.fileSource) { try { this.fileSource.disconnect(); } catch { /* already gone */ } }
     this.fileSource = null;
@@ -340,8 +363,16 @@ class PenguRecorder {
      layout, a camera bubble to bake in, or a crop to apply — cropping means
      re-encoding through the canvas, which the uncropped screen path
      deliberately avoids. */
+  /** True when the camera is cropped tighter than its own frame. */
+  get hasCameraFraming() {
+    const f = this.cameraFrame;
+    return f.zoom > 1.01 || Math.abs(f.x - 0.5) > 0.01 || Math.abs(f.y - 0.5) > 0.01;
+  }
+
   get usesCanvas() {
     if (this.hasFileSource) return true;   // a file always has to be composited
+    // A framed camera has to be redrawn, so camera-only loses its direct path.
+    if (this.mode === 'camera' && this.hasCameraFraming) return true;
     if (this.mode === 'studio') return true;
     if (this.mode === 'screen-cam' && this.cameraStream) return true;
     return this.mode !== 'camera' && this.hasCrop;
@@ -544,6 +575,7 @@ class PenguRecorder {
           screen: this.screenVideo,
           crop: this.crop,
           camera: this.camVideo,
+          cameraFrame: this.cameraFrame,
           opts: out.spec.opts,
         });
       } else {
@@ -660,9 +692,10 @@ class PenguRecorder {
     } else {
       this.screenVideo = this.screenStream ? this._makeSourceVideo(this.screenStream) : null;
     }
-    const s = this.hasFileSource
+    let s = this.hasFileSource
       ? { width: this.fileVideo.videoWidth, height: this.fileVideo.videoHeight }
       : this._trackSettings(this.screenStream);
+    if (this.mode === 'camera') s = this._trackSettings(this.cameraStream);
     const scale = this.cropScale;
     // Even dimensions: odd ones make some encoders pad or refuse the frame.
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
@@ -721,7 +754,9 @@ class PenguRecorder {
       /* Routing an element through the graph takes its sound off the speakers,
          so connect it to both: the recording and the room. An element can only
          ever have one source node, hence the cache. */
-      this.fileVideo.muted = false;
+      this.fileVideo.muted = this.fileMuted;
+      this.fileVideo.volume = this.fileVolume;
+      this.fileVideo.playbackRate = this.fileRate;
       this.fileSource = this.fileSource || this.audioCtx.createMediaElementSource(this.fileVideo);
       this.fileSource.connect(this.audioDest);
       this.fileSource.connect(this.audioCtx.destination);
@@ -742,6 +777,7 @@ class PenguRecorder {
         screen: this.screenVideo,
         crop: this.crop,
         camera: this.camVideo,
+        cameraFrame: this.cameraFrame,
         opts: this.studio,
       });
       return;
@@ -755,6 +791,11 @@ class PenguRecorder {
        surface changes size (window switch, display resize) we letterbox
        instead of cropping — losing the edge of someone's screen is worse
        than a black bar. */
+    if (this.mode === 'camera') {
+      this._drawCover(this.camVideo, 0, 0, W, H, this.cameraFrame);
+      return;
+    }
+
     this._drawCropped(this.screenVideo, W, H);
     if (this.camVideo) this._drawCameraBubble(W, H);
   }
@@ -788,15 +829,23 @@ class PenguRecorder {
     this.ctx.drawImage(video, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
   }
 
-  /** object-fit: cover — fills the rect, crops the overflow (right for the bubble). */
-  _drawCover(video, x, y, w, h) {
+  /**
+   * object-fit: cover — fills the rect, crops the overflow (right for the
+   * bubble). `frame` tightens and moves that crop; see cameraFrame.
+   */
+  _drawCover(video, x, y, w, h, frame) {
     if (!video || video.readyState < 2 || !video.videoWidth) return;
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    const scale = Math.max(w / vw, h / vh);
-    const sw = w / scale;
-    const sh = h / scale;
-    this.ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, x, y, w, h);
+    const zoom = Math.max(1, (frame && frame.zoom) || 1);
+    const scale = Math.max(w / vw, h / vh) * zoom;
+    const sw = Math.min(vw, w / scale);
+    const sh = Math.min(vh, h / scale);
+    const fx = frame && typeof frame.x === 'number' ? frame.x : 0.5;
+    const fy = frame && typeof frame.y === 'number' ? frame.y : 0.5;
+    const sx = Math.min(Math.max(fx * vw - sw / 2, 0), vw - sw);
+    const sy = Math.min(Math.max(fy * vh - sh / 2, 0), vh - sh);
+    this.ctx.drawImage(video, sx, sy, sw, sh, x, y, w, h);
   }
 
   _drawCameraBubble(W, H) {
@@ -821,7 +870,7 @@ class PenguRecorder {
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.clip();
-    this._drawCover(this.camVideo, cx - r, cy - r, r * 2, r * 2);
+    this._drawCover(this.camVideo, cx - r, cy - r, r * 2, r * 2, this.cameraFrame);
     ctx.restore();
   }
 
