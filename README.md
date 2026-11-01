@@ -33,6 +33,32 @@ Then open <http://localhost:8080> in Chrome or Edge.
 Any static host works too, as long as it serves over HTTPS. GitHub Pages is
 enough to host your own copy.
 
+### Desktop app (Windows)
+
+A web page cannot keep its own windows out of a full-screen recording. The
+desktop app can: its launcher, its control bar and the speaker notes use
+Windows' capture exclusion, so you see them and the video does not. Nor do
+screenshots.
+
+```bash
+npm install
+npm start            # run from source
+npm run package      # build out/Pengu Recorder-win32-x64/Pengu Recorder.exe
+```
+
+- A launcher docked on the right picks the screen or a single window, the
+  camera, the microphone, the layout and the template.
+- A vertical control bar on the left: finish, pause, start over, delete, mute,
+  notes. `Alt+Shift+S` / `P` / `M` / `N` work from any app while recording.
+- Speaker notes in their own window, never captured.
+- The Windows taskbar can be cut off, either exactly or cut and fitted back to
+  16:9.
+- Each take is written straight to `Videos\Pengu Recorder` while you record,
+  so stopping is instant: the main video, plus your camera alone and the
+  screen alone if you want them as separate files.
+
+The template editor is the web app itself, opened from the launcher.
+
 ## What it does
 
 **Four recording modes.** Screen and camera, Studio, screen only, camera only.
@@ -132,9 +158,11 @@ and degrades to an in-page bar everywhere else.
   audio, which QuickTime does not play.
 - Cropping and the Studio layout route the take through a compositing canvas,
   which costs a re-encode and some CPU. Screen only without a crop does not.
-- Sharing an entire monitor captures whatever is on it, the presenter notes
-  window included. Share a window or a tab, or move the notes to another
-  monitor.
+- In the browser, sharing an entire monitor captures whatever is on it, the
+  presenter notes window included. The desktop app does not have this problem.
+- Every extra file recorded at the same time is another encoder at work. On a
+  laptop whose screen capture tops out around 20 fps, the screen-alone copy is
+  the one that drops frames first, which is why it is off by default.
 
 See [ROADMAP.md](ROADMAP.md) for what is planned.
 
@@ -149,6 +177,9 @@ js/studio.js      Studio compositor: background, framed screen, camera, name tag
 js/recorder.js    recording engine: streams, canvas compositing, cropping, audio, format
 js/converter.js   MP4 / WebM export with the trim applied
 js/app.js         UI wiring, hash router, crop editor, Picture-in-Picture, downloads
+desktop/main.js   Electron shell: windows kept out of captures, takes written to disk
+desktop/engine.js the recorder in a hidden window, driven by main.js
+desktop/panel.*   launcher, bar.*  control bar, notes.*  speaker notes
 ```
 
 ## Contributing

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Notes</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    html, body { background: #14161F; color: #EEF0F6; user-select: text; }
+    body { display: flex; flex-direction: column; }
+    .top {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 40px;
+      padding: 0 6px 0 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      user-select: none;
+    }
+    .title { flex: 1; font-size: 13px; font-weight: 700; }
+    .title small { font-weight: 500; color: #8D94A6; margin-left: 6px; }
+    .t {
+      display: grid;
+      place-items: center;
+      min-width: 30px;
+      height: 28px;
+      padding: 0 6px;
+      border-radius: 8px;
+      color: #B9BFCE;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .t:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    textarea {
+      flex: 1;
+      width: 100%;
+      padding: 14px 18px 24px;
+      border: 0;
+      resize: none;
+      outline: none;
+      background: transparent;
+      color: inherit;
+      font: 500 20px/1.55 var(--font);
+    }
+    textarea::placeholder { color: #6C7385; }
+  </style>
+</head>
+<body>
+  <div class="top drag">
+    <span class="title">Notes <small>only you can see these</small></span>
+    <button class="t" id="smaller" title="Smaller text" aria-label="Smaller text">A−</button>
+    <button class="t" id="bigger" title="Bigger text" aria-label="Bigger text">A+</button>
+    <button class="t" id="close" title="Close notes (Alt+Shift+N)" aria-label="Close notes">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg>
+    </button>
+  </div>
+  <textarea id="text" spellcheck="false" placeholder="Write or paste your script, the steps of the class, anything you want in front of you. It never shows up in the recording or in screenshots."></textarea>
+  <script src="notes.js"></script>
+</body>
+</html>

@@ -19,3 +19,9 @@ desktop.ini
 
 # Dependencies, should any ever appear
 node_modules/
+
+# Backdrops rendered out for editing elsewhere (CapCut and the like).
+backgrounds-export/
+
+# Packaged desktop builds
+out/

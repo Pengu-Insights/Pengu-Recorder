@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Countdown</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { display: grid; place-items: center; }
+    .n {
+      display: grid;
+      place-items: center;
+      width: 180px;
+      height: 180px;
+      border-radius: 50%;
+      background: rgba(20, 85, 200, 0.92);
+      color: #fff;
+      font: 800 92px/1 var(--font);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+    }
+    .n.pop { animation: pop 0.75s ease-out; }
+    @keyframes pop { from { transform: scale(0.7); opacity: 0.2; } 30% { transform: scale(1.04); opacity: 1; } to { transform: scale(1); } }
+  </style>
+</head>
+<body>
+  <div class="n" id="n">3</div>
+  <script src="countdown.js"></script>
+</body>
+</html>

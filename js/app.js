@@ -276,6 +276,9 @@ async function renderStorageNote() {
 /* ---------------- recording setup ---------------- */
 
 async function enterSetup() {
+  // The desktop panel opens the editor straight on a layout: #/record?mode=studio
+  const wanted = /[?&]mode=([a-z-]+)/.exec(location.hash);
+  if (wanted && ['screen', 'screen-cam', 'camera', 'studio'].includes(wanted[1])) AppState.setupMode = wanted[1];
   applySetupControls();
   selectModeButton(AppState.setupMode);
   $('#notes-input').value = AppState.notes; // notes persist for the session
@@ -870,6 +873,17 @@ function runCountdown() {
 
 async function startRecording() {
   const mode = AppState.setupMode;
+  if (window.penguDesktop) {
+    /* The desktop app records with its own engine, whose windows stay out of
+       the video. This page only hands over the layout and steps aside. */
+    savePrefs();
+    stopMicMeter();
+    stopStudioPreview();
+    recorder.cleanup();
+    const res = await window.penguDesktop.invoke('rec:start', { layout: mode });
+    if (res && !res.ok) await acquireForMode(mode);
+    return;
+  }
   recorder.quality = AppState.quality;
   recorder.format = AppState.format;
   recorder.studio = { ...AppState.studio };
@@ -2530,6 +2544,9 @@ function initEvents() {
   $('#recovery-discard').addEventListener('click', discardRecovery);
 
   window.addEventListener('hashchange', router);
+  // The desktop panel edits the same template choices; keep this copy current
+  // so a later save here does not write the old ones back.
+  window.addEventListener('storage', (e) => { if (e.key === PREFS_KEY) loadPrefs(); });
 }
 
 /* ---------------- boot ---------------- */

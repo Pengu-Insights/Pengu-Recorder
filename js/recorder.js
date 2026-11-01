@@ -111,6 +111,17 @@ class PenguRecorder {
        as a fraction of the source. Used to keep the Windows taskbar, the
        browser tab strip, or any other edge furniture out of the video. */
     this.crop = { top: 0, right: 0, bottom: 0, left: 0 };
+    /* false: the output is exactly the kept region (a cropped taskbar makes it
+       a little shorter than 16:9). true: the kept region is scaled back up to
+       the full source size, for a crop that was chosen to keep the shape. */
+    this.cropFill = false;
+
+    /* Where the chunks go. null keeps them in IndexedDB for the review screen
+       and crash recovery. The desktop app sets { write(key, blob), reset() }
+       and streams them straight to files on disk instead: nothing piles up
+       in memory, and stopping is instant because the files already exist.
+       key is 'main' or an extra's id. */
+    this.chunkSink = null;
 
     // Crash-recovery bookkeeping.
     this.sessionId = null;
@@ -432,14 +443,16 @@ class PenguRecorder {
 
     this.pending = [];
     this.flushSeq = 0;
-    this.sessionId = PenguRecorder.newSessionId();
-    await PenguDB.startSession(this.sessionId, {
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
-      mode: this.mode,
-      mimeType: this.mimeType,
-      durationMs: 0,
-    }).catch(() => {});
+    this.sessionId = this.chunkSink ? null : PenguRecorder.newSessionId();
+    if (this.sessionId) {
+      await PenguDB.startSession(this.sessionId, {
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        mode: this.mode,
+        mimeType: this.mimeType,
+        durationMs: 0,
+      }).catch(() => {});
+    }
 
     this.extras = [];
     for (const spec of this.extraSpecs) {
@@ -465,6 +478,7 @@ class PenguRecorder {
     }
 
     if (this.usesCanvas || this.extras.some((o) => o.ctx)) this._startClock();
+    if (this.chunkSink) return;
     this.flushTimer = setInterval(() => {
       this._flush();
       this.extras.forEach((o) => this._flushExtra(o));
@@ -500,9 +514,10 @@ class PenguRecorder {
         // A crop has to be applied on a canvas; without one the source track
         // goes straight in, untouched.
         const s = this._trackSettings(this.screenStream);
+        const keep = this.cropFill ? { w: 1, h: 1 } : this.cropScale;
         out.canvas = document.createElement('canvas');
-        out.canvas.width = even((s.width || 1920) * this.cropScale.w);
-        out.canvas.height = even((s.height || 1080) * this.cropScale.h);
+        out.canvas.width = even((s.width || 1920) * keep.w);
+        out.canvas.height = even((s.height || 1080) * keep.h);
       } else {
         track = this.screenStream.getVideoTracks()[0];
       }
@@ -537,10 +552,13 @@ class PenguRecorder {
     if (out.mimeType) options.mimeType = out.mimeType;
     out.mediaRecorder = new MediaRecorder(out.stream, options);
     out.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) out.pending.push(e.data);
+      if (!e.data || !e.data.size) return;
+      if (this.chunkSink) this.chunkSink.write(out.spec.id, e.data);
+      else out.pending.push(e.data);
     };
     out.pending = [];
     out.flushSeq = 0;
+    if (this.chunkSink) { out.sessionId = null; return; }
     out.sessionId = PenguRecorder.newSessionId();
     await PenguDB.startSession(out.sessionId, {
       startedAt: Date.now(),
@@ -630,7 +648,9 @@ class PenguRecorder {
     if (this.mimeType) options.mimeType = this.mimeType;
     this.mediaRecorder = new MediaRecorder(this.recordedStream, options);
     this.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) this.pending.push(e.data);
+      if (!e.data || !e.data.size) return;
+      if (this.chunkSink) this.chunkSink.write('main', e.data);
+      else this.pending.push(e.data);
     };
   }
 
@@ -711,8 +731,9 @@ class PenguRecorder {
       this.canvas.width = size.w;
       this.canvas.height = size.h;
     } else {
-      this.canvas.width = even((s.width || 1920) * scale.w);
-      this.canvas.height = even((s.height || 1080) * scale.h);
+      const fill = this.cropFill && this.mode !== 'camera';
+      this.canvas.width = even((s.width || 1920) * (fill ? 1 : scale.w));
+      this.canvas.height = even((s.height || 1080) * (fill ? 1 : scale.h));
     }
     if (this.cameraStream) this.camVideo = this._makeSourceVideo(this.cameraStream);
 
@@ -915,6 +936,16 @@ class PenguRecorder {
       if (this.state === 'idle' || !this.mediaRecorder) { resolve(null); return; }
       const duration = this.getElapsedMs() / 1000;
       const sessionId = this.sessionId;
+      if (this.chunkSink) {
+        const hasAudio = !!(this.recordedStream && this.recordedStream.getAudioTracks().length);
+        const outs = [this.mediaRecorder, ...this.extras.map((o) => o.mediaRecorder)];
+        const extras = this.extras.map((o) => ({ id: o.spec.id, label: o.spec.label }));
+        Promise.all(outs.map((mr) => this._stopRecorder(mr))).then(() => {
+          this._teardown();
+          resolve({ blob: null, duration, sessionId: null, hasAudio, extras });
+        });
+        return;
+      }
       // Stopped together with the main recorder, so every version ends on the same frame.
       const extrasDone = this._finishExtras();
 
@@ -956,23 +987,28 @@ class PenguRecorder {
     });
 
     await this.flushChain;
-    PenguDB.clearSession(oldSession).catch(() => {});
+    if (oldSession) PenguDB.clearSession(oldSession).catch(() => {});
     for (const out of this.extras) {
       await this._stopRecorder(out.mediaRecorder);
       await out.flushChain;
-      PenguDB.clearSession(out.sessionId).catch(() => {});
+      if (out.sessionId) PenguDB.clearSession(out.sessionId).catch(() => {});
     }
 
     this.pending = [];
     this.flushSeq = 0;
-    this.sessionId = PenguRecorder.newSessionId();
-    await PenguDB.startSession(this.sessionId, {
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
-      mode: this.mode,
-      mimeType: this.mimeType,
-      durationMs: 0,
-    }).catch(() => {});
+    if (this.chunkSink) {
+      this.sessionId = null;
+      this.chunkSink.reset();
+    } else {
+      this.sessionId = PenguRecorder.newSessionId();
+      await PenguDB.startSession(this.sessionId, {
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        mode: this.mode,
+        mimeType: this.mimeType,
+        durationMs: 0,
+      }).catch(() => {});
+    }
 
     // A fresh take means the file plays again from the top.
     if (this.hasFileSource) {
@@ -1007,7 +1043,7 @@ class PenguRecorder {
     for (const out of this.extras) {
       await this._stopRecorder(out.mediaRecorder);
       await out.flushChain;
-      PenguDB.clearSession(out.sessionId).catch(() => {});
+      if (out.sessionId) PenguDB.clearSession(out.sessionId).catch(() => {});
     }
     this._teardown();
   }

@@ -1,0 +1,50 @@
+/* Shared look for the desktop windows: panel, bar, notes, countdown. */
+:root {
+  --brand: #1455C8;
+  --brand-dark: #0F409A;
+  --brand-ghost: #E8EFFB;
+  --accent: #E9F13A;
+  --ink: #121722;
+  --ink-soft: #5A6472;
+  --line: #E4E7EE;
+  --card: #FFFFFF;
+  --field: #F3F5F9;
+  --danger: #E5484D;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.drag { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+.icon { width: 20px; height: 20px; flex: none; }
+
+.hidden { display: none !important; }

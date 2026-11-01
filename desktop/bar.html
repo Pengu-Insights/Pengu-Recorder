@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Pengu Recorder controls</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { display: grid; place-items: center; padding: 6px; }
+    .bar {
+      width: 52px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 0 6px;
+      border-radius: 16px;
+      background: #1B1E2B;
+      color: #E6E9F2;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+    .b {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 11px;
+      color: #C9CEDB;
+    }
+    .b:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    .b.active { color: var(--accent); }
+    .stop {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #fff;
+    }
+    .stop::after {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      background: var(--danger);
+    }
+    .stop:hover { background: #FFE9EA; }
+    .time {
+      font: 700 12px var(--font);
+      font-variant-numeric: tabular-nums;
+      margin: 2px 0 4px;
+    }
+    .paused .time { color: var(--accent); animation: blink 1s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: 0.35; } }
+    .sep { width: 28px; height: 1px; background: rgba(255, 255, 255, 0.12); margin: 2px 0; }
+    .grip { width: 40px; height: 22px; display: grid; place-items: center; color: #6C7385; cursor: grab; }
+    .b.armed { background: var(--danger); color: #fff; }
+    .muted-x { display: none; }
+    .muted .muted-x { display: inline; }
+    .muted #mute { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="bar" id="bar">
+    <button class="stop" id="stop" title="Finish recording (Alt+Shift+S)" aria-label="Finish recording"></button>
+    <span class="time" id="time" aria-live="off">0:00</span>
+    <button class="b" id="pause" title="Pause (Alt+Shift+P)" aria-label="Pause">
+      <svg class="icon" id="pause-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
+      <svg class="icon hidden" id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L8.5 4.64A1 1 0 0 0 7 5.5z"/></svg>
+    </button>
+    <button class="b" id="restart" title="Start over" aria-label="Start over">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v5h5"/></svg>
+    </button>
+    <button class="b" id="delete" title="Delete this recording" aria-label="Delete this recording">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+    </button>
+    <div class="sep"></div>
+    <button class="b" id="mute" title="Mute microphone (Alt+Shift+M)" aria-label="Mute microphone">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="muted-x" d="M4 4l16 16"/></svg>
+    </button>
+    <button class="b" id="notes" title="Notes (Alt+Shift+N)" aria-label="Notes">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+    </button>
+    <div class="grip drag" title="Drag to move">
+      <svg width="16" height="10" viewBox="0 0 16 10" fill="currentColor"><circle cx="3" cy="2" r="1.4"/><circle cx="8" cy="2" r="1.4"/><circle cx="13" cy="2" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg>
+    </div>
+  </div>
+  <script src="bar.js"></script>
+</body>
+</html>
