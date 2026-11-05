@@ -143,6 +143,13 @@ const PenguStudio = (() => {
       screen = contain(area, screenAspect);
       cam = { x: camFirst ? pad : W - pad - camW, y: pad, w: camW, h: panelH };
     }
+    if (opts.cameraShape === 'circle') {
+      // A circle as big as the panel allows, centred in it, so the name tag
+      // still hangs off the bottom of what you see.
+      const d = Math.min(cam.w, cam.h);
+      cam = { x: cam.x + Math.round((cam.w - d) / 2), y: cam.y + Math.round((cam.h - d) / 2), w: d, h: d };
+      return { screen, cam, screenRadius: Math.round(U * 0.03), camShape: 'circle' };
+    }
     return { screen, cam, screenRadius: Math.round(U * 0.03), camShape: 'panel' };
   }
 

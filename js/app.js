@@ -303,7 +303,7 @@ function applySetupControls() {
   if (!$('#quality').value) $('#quality').value = 'auto';
   $('#cam-size').value = AppState.studio.cameraSize;
   $('#studio-side').value = AppState.studio.cameraSide;
-  $('#studio-shape').value = AppState.studio.cameraShape;
+  applyStudioShape();
   $('#studio-name').value = AppState.studio.name;
   $('#studio-corner').value = AppState.studio.cameraCorner;
   applyStudioAspect();
@@ -432,13 +432,18 @@ function renderVideoSource() {
   }
 }
 
+/* Rectangle, square or circle: applies to the camera in every template. */
+function applyStudioShape() {
+  document.querySelectorAll('.shape-btn').forEach((b) => {
+    b.setAttribute('aria-checked', b.dataset.shape === AppState.studio.cameraShape ? 'true' : 'false');
+  });
+}
+
 /* Show the controls that matter for the chosen template. */
 function applyStudioTemplate() {
   const t = AppState.studio.template;
   const studio = AppState.setupMode === 'studio';
   $('#studio-side-field').classList.toggle('hidden', t !== 'side' && t !== 'split');
-  // Split panels are always rounded rectangles, so the shape picker does not apply.
-  $('#studio-shape').closest('.field').classList.toggle('hidden', t === 'split');
   $('#studio-corner-field').classList.toggle('hidden', t !== 'corner' && t !== 'framed-corner');
   $('#crop-field').classList.toggle('hidden', !needsScreen(AppState.setupMode));
   document.querySelectorAll('#template-picker .template-tile').forEach((b) => {
@@ -557,7 +562,7 @@ async function renderTemplatePicker() {
    the video, and "left/right of the screen" becomes "above/below". */
 function applyStudioAspect() {
   const vertical = AppState.studio.aspect !== 'landscape';
-  document.querySelectorAll('.aspect-btn').forEach((b) => {
+  document.querySelectorAll('.aspect-btn[data-aspect]').forEach((b) => {
     b.setAttribute('aria-checked', b.dataset.aspect === AppState.studio.aspect ? 'true' : 'false');
   });
   const canvas = $('#studio-preview');
@@ -2403,10 +2408,17 @@ function initEvents() {
   };
   $('#cam-size').addEventListener('change', studioChange('cameraSize'));
   $('#studio-side').addEventListener('change', studioChange('cameraSide'));
-  $('#studio-shape').addEventListener('change', studioChange('cameraShape'));
+  document.querySelectorAll('.shape-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      AppState.studio.cameraShape = btn.dataset.shape;
+      savePrefs();
+      applyStudioShape();
+      renderTemplatePicker();
+    });
+  });
   $('#studio-corner').addEventListener('change', studioChange('cameraCorner'));
   $('#studio-name').addEventListener('input', (e) => { AppState.studio.name = e.target.value; savePrefs(); });
-  document.querySelectorAll('.aspect-btn').forEach((btn) => {
+  document.querySelectorAll('.aspect-btn[data-aspect]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const aspect = btn.dataset.aspect;
       AppState.studio.aspect = aspect;

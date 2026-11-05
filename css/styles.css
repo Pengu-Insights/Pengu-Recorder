@@ -1138,6 +1138,8 @@ body {
 
 .aspect-icon--landscape { width: 32px; height: 18px; }
 .aspect-icon--vertical { width: 14px; height: 24px; margin: 0 9px; }
+.aspect-icon--square { width: 20px; height: 20px; margin: 0 6px; }
+.aspect-icon--circle { width: 22px; height: 22px; margin: 0 5px; border-radius: 50%; }
 .aspect-btn[aria-checked="true"] .aspect-icon { color: var(--brand); }
 
 .studio-panel {

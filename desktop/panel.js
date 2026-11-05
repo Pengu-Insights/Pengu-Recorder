@@ -33,7 +33,6 @@ function renderTemplate() {
   $('#tpl-shape').value = studio.cameraShape || 'portrait';
   $('#tpl-corner').value = studio.cameraCorner || 'br';
   $('#tpl-corner').classList.toggle('hidden', t !== 'corner' && t !== 'framed-corner');
-  $('#tpl-shape').classList.toggle('hidden', t === 'split');
 }
 
 /* ---------- settings ---------- */

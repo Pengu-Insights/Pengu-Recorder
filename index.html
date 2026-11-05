@@ -294,6 +294,27 @@
             <div id="template-picker" class="template-picker" role="radiogroup" aria-labelledby="template-label"></div>
 
             <div class="studio-head">
+              <span class="studio-title" id="shape-label">Camera shape</span>
+            </div>
+            <div class="aspect-picker" role="radiogroup" aria-labelledby="shape-label">
+              <button type="button" class="aspect-btn shape-btn" data-shape="portrait" role="radio">
+                <span class="aspect-icon aspect-icon--vertical" aria-hidden="true"></span>
+                <strong>Rectangle</strong>
+                <small>Rounded corners</small>
+              </button>
+              <button type="button" class="aspect-btn shape-btn" data-shape="square" role="radio">
+                <span class="aspect-icon aspect-icon--square" aria-hidden="true"></span>
+                <strong>Square</strong>
+                <small>Rounded corners</small>
+              </button>
+              <button type="button" class="aspect-btn shape-btn" data-shape="circle" role="radio">
+                <span class="aspect-icon aspect-icon--circle" aria-hidden="true"></span>
+                <strong>Circle</strong>
+                <small>Your face in a round frame</small>
+              </button>
+            </div>
+
+            <div class="studio-head">
               <span class="studio-title" id="bg-gallery-label">Background</span>
               <span class="studio-sub">Pick one, or add your own image, like a wallpaper you made with an AI image generator. It stays in this browser.</span>
             </div>
@@ -320,14 +341,6 @@
                 <select id="studio-side">
                   <option value="left">Left of the screen</option>
                   <option value="right">Right of the screen</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Camera shape</span>
-                <select id="studio-shape">
-                  <option value="portrait">Portrait</option>
-                  <option value="square">Square</option>
-                  <option value="circle">Circle</option>
                 </select>
               </label>
               <label class="field studio-name-field">
