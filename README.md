@@ -40,6 +40,14 @@ desktop app can: its launcher, its control bar and the speaker notes use
 Windows' capture exclusion, so you see them and the video does not. Nor do
 screenshots.
 
+**Download it ready to run:** the latest build of `main` is on the
+[desktop-latest release](https://github.com/Pengu-Insights/Pengu-Recorder/releases/tag/desktop-latest).
+Unzip it and run `Pengu Recorder.exe`; no Node.js needed. It is not code-signed,
+so the first launch may show a SmartScreen warning (More info, Run anyway). Every
+build is made by the `Desktop app (Windows)` workflow in GitHub Actions.
+
+To work on it from source:
+
 ```bash
 npm install
 npm start            # run from source
