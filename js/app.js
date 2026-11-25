@@ -947,7 +947,7 @@ async function startRecording() {
   // whatever is on that monitor, the notes window included.
   if (needsScreen(mode) && AppState.notes.trim() && !AppState.notesTipShown) {
     AppState.notesTipShown = true;
-    toast('Notes open in a separate window. If you share your entire screen, drag that window to another monitor or it will be recorded.');
+    toast('Notes open in the floating window with the controls. A browser cannot hide its windows from a whole-screen share: put that window on another monitor, or use the desktop app, whose windows never appear in the video.');
   }
 
   recorder.bubble.radius = PenguRecorder.RADII[$('#cam-size').value] || PenguRecorder.RADII.medium;
@@ -1221,8 +1221,8 @@ function renderNotesPanel() {
   const text = AppState.notes || '(no notes)';
   const fontSize = `${AppState.notesFont}px`;
   const bodies = [$('#notes-panel-body')];
-  if (AppState.notesPipWin && !AppState.notesPipWin.closed) {
-    bodies.push(AppState.notesPipWin.document.querySelector('#notes-panel-body'));
+  for (const pip of [AppState.notesPipWin, AppState.ctrlPipWin]) {
+    if (pip && !pip.closed) bodies.push(pip.document.querySelector('#notes-panel-body'));
   }
   for (const body of bodies) {
     if (!body) continue;
@@ -1254,8 +1254,8 @@ async function openControlPip() {
   try {
     if (AppState.ctrlPipWin && !AppState.ctrlPipWin.closed) return true;
     const pip = await window.documentPictureInPicture.requestWindow({
-      width: 420,
-      height: AppState.previewOn ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY,
+      width: AppState.notesOpen ? PIP_WIDTH_WITH_NOTES : 420,
+      height: pipHeight(),
     });
     AppState.ctrlPipWin = pip;
     pip.document.title = 'Recording — Pengu Recorder';
@@ -1283,8 +1283,36 @@ async function openControlPip() {
              box-shadow: none !important; flex: none; }
       .pip-preview { width: 100%; flex: 1 1 auto; min-height: 0; object-fit: contain;
              background: #000; border-radius: 10px; display: block; }
-      .pip-preview.hidden { display: none; }`;
+      .pip-preview.hidden { display: none; }
+      .pip-notes { position: static !important; width: 100% !important; max-height: none !important;
+             flex: 1 1 ${PIP_NOTES_HEIGHT}px; min-height: 120px; border-radius: 10px;
+             background: #1F1E3D !important; color: #FFFFFF !important; box-shadow: none !important;
+             backdrop-filter: none !important; }
+      .pip-notes #notes-panel-header { cursor: default; }
+      .pip-notes #notes-panel-body { flex: 1; color: #FFFFFF; }
+      .pip-notes.hidden { display: none !important; }`;
     pip.document.head.appendChild(extra);
+
+    /* Notes live in this same window. Chrome allows one Picture-in-Picture
+       window per page, so a separate notes window used to close this one,
+       which dropped the controls back into the page and into the video. */
+    const notes = $('#notes-panel').cloneNode(true);
+    notes.removeAttribute('id');
+    notes.style.cssText = '';
+    notes.classList.add('pip-notes');
+    notes.classList.toggle('hidden', !AppState.notesOpen);
+    notes.querySelector('#notes-panel-body').textContent = AppState.notes || '(no notes)';
+    notes.querySelector('#notes-panel-body').style.fontSize = `${AppState.notesFont}px`;
+    notes.querySelector('#notes-close').addEventListener('click', () => setNotesOpen(false));
+    notes.querySelector('#notes-font-up').addEventListener('click', () => {
+      AppState.notesFont = Math.min(40, AppState.notesFont + 2);
+      renderNotesPanel();
+    });
+    notes.querySelector('#notes-font-down').addEventListener('click', () => {
+      AppState.notesFont = Math.max(12, AppState.notesFont - 2);
+      renderNotesPanel();
+    });
+    pip.document.body.prepend(notes); // on top, closest to the camera
 
     /* The preview is fed by the recorded stream itself, so it shows exactly
        the frames being encoded: backdrop, template, crop and camera included. */
@@ -1349,6 +1377,21 @@ async function openControlPip() {
 
 const PIP_HEIGHT_WITH_PREVIEW = 330;
 const PIP_HEIGHT_BAR_ONLY = 72;
+const PIP_NOTES_HEIGHT = 300;
+const PIP_WIDTH_WITH_NOTES = 460;
+
+/** Height of the floating window for what it currently holds. */
+function pipHeight() {
+  return (AppState.previewOn ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY)
+    + (AppState.notesOpen ? PIP_NOTES_HEIGHT : 0);
+}
+
+function resizeControlPip() {
+  const pip = AppState.ctrlPipWin;
+  if (!pip || pip.closed) return;
+  const width = Math.max(pip.outerWidth || 420, AppState.notesOpen ? PIP_WIDTH_WITH_NOTES : 0);
+  try { pip.resizeTo(width, pipHeight()); } catch { /* the user can resize it */ }
+}
 
 /** Point whichever preview surface exists at the stream being recorded. */
 function attachPreviewStream() {
@@ -1389,11 +1432,8 @@ function warnAboutPreviewInShot() {
 
 function setPreviewOn(on) {
   AppState.previewOn = on;
-  const pip = AppState.ctrlPipWin;
-  if (pip && !pip.closed) {
-    // Give the window back its space when the preview is put away.
-    try { pip.resizeTo(pip.outerWidth || 420, on ? PIP_HEIGHT_WITH_PREVIEW : PIP_HEIGHT_BAR_ONLY); } catch { /* the user can resize it */ }
-  }
+  // Give the window back its space when the preview is put away.
+  resizeControlPip();
   attachPreviewStream();
   for (const btn of previewButtons()) {
     btn.classList.toggle('active', on);
@@ -1523,6 +1563,17 @@ async function setNotesOpen(open) {
   const show = open && recorder.state !== 'idle';
   $('#cb-notes').classList.toggle('active', show);
   $('#cb-notes').setAttribute('aria-pressed', show ? 'true' : 'false');
+  const ctrl = AppState.ctrlPipWin;
+  if (ctrl && !ctrl.closed) {
+    // The floating controls are up: show the notes inside that window.
+    const box = ctrl.document.querySelector('.pip-notes');
+    if (box) box.classList.toggle('hidden', !show);
+    closeNotesPip();
+    $('#notes-panel').classList.add('hidden');
+    resizeControlPip();
+    if (show) renderNotesPanel();
+    return;
+  }
   if (!show) {
     closeNotesPip();
     $('#notes-panel').classList.add('hidden');

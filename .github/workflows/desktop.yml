@@ -1,0 +1,66 @@
+name: Desktop app (Windows)
+
+# Builds the Electron desktop app on a Windows runner, so nobody needs Node.js
+# to use it. Every build is downloadable from the run's page (Artifacts). On
+# main it is also published as the "desktop-latest" release, a stable link:
+# https://github.com/Pengu-Insights/Pengu-Recorder/releases/tag/desktop-latest
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths:
+      - 'desktop/**'
+      - 'js/**'
+      - 'css/**'
+      - 'index.html'
+      - 'assets/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run package
+
+      - name: Upload the app as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pengu-Recorder-Windows
+          path: out/Pengu Recorder-win32-x64/
+          if-no-files-found: error
+
+      - name: Zip the app for the release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: Compress-Archive -Path "out/Pengu Recorder-win32-x64" -DestinationPath "Pengu-Recorder-Windows.zip"
+
+      - name: Publish the desktop-latest release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete desktop-latest --yes --cleanup-tag || true
+          gh release create desktop-latest Pengu-Recorder-Windows.zip \
+            --target "$GITHUB_SHA" \
+            --title "Pengu Recorder for Windows (latest build)" \
+            --notes "Unzip, open the Pengu Recorder folder and run Pengu Recorder.exe. Its control bar, notes and countdown never appear in your recordings. The app is not code-signed, so Windows may show a SmartScreen warning the first time: More info, then Run anyway."
