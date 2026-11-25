@@ -917,11 +917,11 @@ body {
 /* ============ Presenter notes in the PiP window ============
    The notes clone renders inside the Document Picture-in-Picture
    window: it fills that window edge to edge instead of floating. */
+/* `right: auto` and `top: auto` here used to undo the inset, shrinking the
+   panel into the bottom-left corner of the window with its text cut off. */
 .notes-panel--pip {
   position: absolute;
   inset: 0;
-  right: auto;
-  top: auto;
   width: auto;
   max-height: none;
   border-radius: 0;
